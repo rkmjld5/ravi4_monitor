@@ -1,208 +1,192 @@
 <?php
 /*
-    PROJECT: ravi2_patient
-    FILE: patient_access.php
+=========================================================
+RAVI3 PATIENT MONITORING SYSTEM
+File: patient_access.php
 
-    PURPOSE:
-    Check whether the currently logged-in patient is still allowed
-    to use the monitoring application.
+PURPOSE:
+1. Check whether the patient has logged in.
+2. Check the patient's session information.
+3. Confirm that the assigned device is enabled.
+4. Check the device assignment start and expiry dates.
+5. Stop access if the account/device is disabled or expired.
 
-    This file must be included at the beginning of every protected
-    patient page, before any HTML is displayed.
+IMPORTANT:
+Include this file at the beginning of patient pages:
+index.php, history.php, ecg_history.php and alerts.php.
 
-    CHECKS:
-    1. Patient is logged in.
-    2. Login account still exists.
-    3. Account role is patient.
-    4. Login account is enabled.
-    5. Login validity dates are correct.
-    6. Device is still assigned to the patient.
-    7. Device is enabled and assignment dates are valid.
-    8. Patient record still exists.
-
-    No database tables are changed by this program.
+This file uses the Ravi3 session name and variables.
+=========================================================
 */
 
-// --------------------------------------------------
-// 1. CONNECT TO DATABASE AND START SESSION
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 1. LOAD DATABASE CONNECTION
+// -------------------------------------------------------
 
 require_once __DIR__ . "/config.php";
 
-// Check database connection.
-if (!isset($conn) || !($conn instanceof mysqli)) {
-    die("Database connection is not available.");
-}
 
-// --------------------------------------------------
-// 2. CHECK WHETHER PATIENT IS LOGGED IN
-// --------------------------------------------------
+// -------------------------------------------------------
+// 2. CHECK PATIENT LOGIN
+// -------------------------------------------------------
 
 if (
-    empty($_SESSION["ravi2_patient_logged_in"]) ||
-    empty($_SESSION["ravi2_username"]) ||
-    empty($_SESSION["ravi2_patient_id"]) ||
-    empty($_SESSION["ravi2_device_id"])
+    empty($_SESSION["ravi3_patient_id"]) ||
+    empty($_SESSION["ravi3_patient_name"]) ||
+    empty($_SESSION["ravi3_device_id"])
 ) {
     header("Location: login.php");
     exit;
 }
 
-// Read the patient information saved during login.
-$username  = $_SESSION["ravi2_username"];
-$patient_id = $_SESSION["ravi2_patient_id"];
-$device_id  = $_SESSION["ravi2_device_id"];
 
-// --------------------------------------------------
-// 3. CHECK LOGIN ACCOUNT AGAINST DATABASE
-// --------------------------------------------------
+// -------------------------------------------------------
+// 3. GET PATIENT DETAILS FROM SESSION
+// -------------------------------------------------------
 
-$account_sql = "
-    SELECT username
-    FROM web_users
-    WHERE
-        username = ?
-        AND role = 'patient'
-        AND enabled = 1
-        AND device_id = ?
-        AND (valid_from IS NULL OR valid_from <= NOW())
-        AND (valid_until IS NULL OR valid_until >= NOW())
+$patient_id = trim($_SESSION["ravi3_patient_id"]);
+$patient_name = trim($_SESSION["ravi3_patient_name"]);
+$device_id = trim($_SESSION["ravi3_device_id"]);
+
+
+// -------------------------------------------------------
+// 4. CHECK DEVICE ASSIGNMENT
+// -------------------------------------------------------
+
+// The patient must have an enabled assignment for this
+// exact device ID.
+//
+// Expected patient_devices columns:
+// patient_id, device_id, enabled, valid_from, valid_until.
+//
+// The assignment is not changed by this program.
+
+$sql = "
+    SELECT
+        patient_id,
+        device_id,
+        enabled,
+        valid_from,
+        valid_until
+    FROM patient_devices
+    WHERE patient_id = ?
+      AND device_id = ?
     LIMIT 1
 ";
 
-$account_stmt = $conn->prepare($account_sql);
+$stmt = $db->prepare($sql);
 
-if (!$account_stmt) {
-    error_log("Patient access account check: " . $conn->error);
-    die("Unable to verify your account. Please try again later.");
+if (!$stmt) {
+    error_log("Ravi3 patient access query preparation failed: " . $db->error);
+    die("Unable to verify patient access. Please try again later.");
 }
 
-$account_stmt->bind_param("ss", $username, $device_id);
-$account_stmt->execute();
-$account_stmt->bind_result($verified_username);
+$stmt->bind_param("ss", $patient_id, $device_id);
 
-$account_valid = $account_stmt->fetch();
-
-$account_stmt->close();
-
-// If the account is disabled, expired, or changed, stop access.
-if (!$account_valid) {
-    $error_message = "Your patient account is disabled or expired.";
-} else {
-    $error_message = "";
+if (!$stmt->execute()) {
+    error_log("Ravi3 patient access query execution failed: " . $stmt->error);
+    $stmt->close();
+    die("Unable to verify patient access. Please try again later.");
 }
 
-// --------------------------------------------------
-// 4. CHECK DEVICE ASSIGNMENT AND PATIENT RECORD
-// --------------------------------------------------
+$result = $stmt->get_result();
 
-if ($error_message === "") {
+$assignment = $result->fetch_assoc();
 
-    $device_sql = "
-        SELECT
-            p.patient_id,
-            p.full_name
-        FROM patient_devices d
-        INNER JOIN patients p
-            ON p.patient_id = d.patient_id
-        WHERE
-            d.device_id = ?
-            AND d.patient_id = ?
-            AND d.enabled = 1
-            AND (
-                d.start_date_time IS NULL
-                OR d.start_date_time <= NOW()
-            )
-            AND (
-                d.end_date_time IS NULL
-                OR d.end_date_time >= NOW()
-            )
-        LIMIT 1
-    ";
+$stmt->close();
 
-    $device_stmt = $conn->prepare($device_sql);
 
-    if (!$device_stmt) {
-        error_log("Patient access device check: " . $conn->error);
-        die("Unable to verify your device assignment. Please try again later.");
-    }
+// -------------------------------------------------------
+// 5. STOP ACCESS IF NO ASSIGNMENT EXISTS
+// -------------------------------------------------------
 
-    $device_stmt->bind_param("ss", $device_id, $patient_id);
-    $device_stmt->execute();
+if (!$assignment) {
 
-    $device_stmt->bind_result(
-        $verified_patient_id,
-        $verified_patient_name
-    );
-
-    $device_valid = $device_stmt->fetch();
-
-    $device_stmt->close();
-
-    if (!$device_valid) {
-        $error_message =
-            "Your monitoring device is disabled, expired, or no longer assigned to your account.";
-    }
-}
-
-// --------------------------------------------------
-// 5. BLOCK ACCESS IF ANY CHECK FAILED
-// --------------------------------------------------
-
-if ($error_message !== "") {
-
-    // Remove the patient's login session.
-    $_SESSION = [];
-
-    // Remove the session cookie.
-    if (ini_get("session.use_cookies")) {
-
-        $cookie_parameters = session_get_cookie_params();
-
-        setcookie(
-            session_name(),
-            "",
-            time() - 42000,
-            $cookie_parameters["path"],
-            $cookie_parameters["domain"],
-            $cookie_parameters["secure"],
-            $cookie_parameters["httponly"]
-        );
-    }
-
-    // Destroy the session.
+    session_unset();
     session_destroy();
 
-    // Send the patient back to the login page.
-    $message = urlencode($error_message);
-
-    header("Location: login.php?message=" . $message);
+    header("Location: login.php?error=assignment");
     exit;
 }
 
-// --------------------------------------------------
-// 6. UPDATE VERIFIED PATIENT INFORMATION
-// --------------------------------------------------
 
-/*
-   Use the latest information from the database.
-   Do not rely only on information saved during login.
-*/
+// -------------------------------------------------------
+// 6. CHECK WHETHER DEVICE IS ENABLED
+// -------------------------------------------------------
 
-$_SESSION["ravi2_patient_id"] = $verified_patient_id;
+if ((int)$assignment["enabled"] !== 1) {
 
-$_SESSION["ravi2_patient_name"] = $verified_patient_name;
+    session_unset();
+    session_destroy();
 
-$_SESSION["ravi2_device_id"] = $device_id;
+    header("Location: login.php?error=disabled");
+    exit;
+}
 
-$_SESSION["ravi2_role"] = "patient";
 
-// --------------------------------------------------
-// 7. PATIENT ACCESS APPROVED
-// --------------------------------------------------
+// -------------------------------------------------------
+// 7. CHECK START AND EXPIRY DATES
+// -------------------------------------------------------
 
-/*
-   The requested protected page can now continue.
-   No HTML is displayed by this file.
-*/
+date_default_timezone_set("Asia/Kolkata");
+
+$now = new DateTime("now", new DateTimeZone("Asia/Kolkata"));
+
+
+// Check the assignment start date.
+if (!empty($assignment["valid_from"])) {
+
+    $validFrom = new DateTime(
+        $assignment["valid_from"],
+        new DateTimeZone("Asia/Kolkata")
+    );
+
+    if ($now < $validFrom) {
+
+        session_unset();
+        session_destroy();
+
+        header("Location: login.php?error=notstarted");
+        exit;
+    }
+}
+
+
+// Check the assignment expiry date.
+if (!empty($assignment["valid_until"])) {
+
+    $validUntil = new DateTime(
+        $assignment["valid_until"],
+        new DateTimeZone("Asia/Kolkata")
+    );
+
+    if ($now > $validUntil) {
+
+        session_unset();
+        session_destroy();
+
+        header("Location: login.php?error=expired");
+        exit;
+    }
+}
+
+
+// -------------------------------------------------------
+// 8. ACCESS APPROVED
+// -------------------------------------------------------
+
+// The following variables are available to the
+// patient dashboard and report pages:
+//
+// $patient_id
+// $patient_name
+// $device_id
+//
+// Access is allowed only for the assigned device.
+
+
+// -------------------------------------------------------
+// END OF patient_access.php
+// -------------------------------------------------------
 ?>
