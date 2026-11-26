@@ -1,29 +1,23 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: owner_patient.php
 
 PURPOSE:
-1. Verify owner login.
-2. Receive a patient_id from owner.php.
-3. Display the selected patient's details.
-4. Display recent monitoring readings.
-5. Display recent dashboard alerts.
+1. Verify Ravi4 owner login.
+2. Receive patient_id from owner.php.
+3. Display patient information.
+4. Display assigned ESP32 devices.
+5. Display recent monitoring readings.
+6. Display dashboard alerts.
 
-This page is READ ONLY.
+READ ONLY:
+This page does not change patient accounts,
+device assignments, monitoring readings or alerts.
 
-It does not change:
-- Patient accounts
-- Passwords
-- Device assignments
-- Monitoring readings
-- ECG records
-- Alerts
-
-Database connection: config.php
-Database: patient_monitor
-Connection: MySQLi
+IMPORTANT:
+This file uses Ravi4 session variables.
 =========================================================
 */
 
@@ -33,12 +27,12 @@ date_default_timezone_set("Asia/Kolkata");
 
 
 // -------------------------------------------------------
-// 1. CHECK OWNER LOGIN
+// 1. CHECK RAVI4 OWNER LOGIN
 // -------------------------------------------------------
 
 if (
-    empty($_SESSION["ravi3_owner_logged_in"]) ||
-    $_SESSION["ravi3_owner_logged_in"] !== true
+    empty($_SESSION["ravi4_owner_logged_in"]) ||
+    $_SESSION["ravi4_owner_logged_in"] !== true
 ) {
     header("Location: owner_login.php");
     exit;
@@ -86,14 +80,20 @@ $patientSql = "
 $patientStmt = $db->prepare($patientSql);
 
 if (!$patientStmt) {
-    error_log("Owner patient report error: " . $db->error);
+
+    error_log(
+        "Ravi4 owner patient report error: " . $db->error
+    );
+
     die("Unable to prepare patient query.");
 }
 
 $patientStmt->bind_param("s", $patientId);
 
 if (!$patientStmt->execute()) {
+
     $patientStmt->close();
+
     die("Unable to load patient information.");
 }
 
@@ -112,7 +112,8 @@ if (!$patient) {
 // 5. GET PATIENT NAME
 // -------------------------------------------------------
 
-$patientName = $patient["patient_name"]
+$patientName =
+    $patient["patient_name"]
     ?? $patient["name"]
     ?? $patient["full_name"]
     ?? $patientId;
@@ -134,20 +135,27 @@ $deviceSql = "
 $deviceStmt = $db->prepare($deviceSql);
 
 if (!$deviceStmt) {
-    error_log("Owner device report error: " . $db->error);
+
+    error_log(
+        "Ravi4 owner device report error: " . $db->error
+    );
+
     die("Unable to prepare device query.");
 }
 
 $deviceStmt->bind_param("s", $patientId);
 
 if (!$deviceStmt->execute()) {
+
     $deviceStmt->close();
+
     die("Unable to load device assignments.");
 }
 
 $deviceResult = $deviceStmt->get_result();
 
 while ($row = $deviceResult->fetch_assoc()) {
+
     $devices[] = $row;
 }
 
@@ -171,20 +179,27 @@ $monitorSql = "
 $monitorStmt = $db->prepare($monitorSql);
 
 if (!$monitorStmt) {
-    error_log("Owner monitoring report error: " . $db->error);
+
+    error_log(
+        "Ravi4 owner monitoring report error: " . $db->error
+    );
+
     die("Unable to prepare monitoring query.");
 }
 
 $monitorStmt->bind_param("s", $patientId);
 
 if (!$monitorStmt->execute()) {
+
     $monitorStmt->close();
+
     die("Unable to load monitoring readings.");
 }
 
 $monitorResult = $monitorStmt->get_result();
 
 while ($row = $monitorResult->fetch_assoc()) {
+
     $readings[] = $row;
 }
 
@@ -208,20 +223,27 @@ $alertSql = "
 $alertStmt = $db->prepare($alertSql);
 
 if (!$alertStmt) {
-    error_log("Owner alert report error: " . $db->error);
+
+    error_log(
+        "Ravi4 owner alert report error: " . $db->error
+    );
+
     die("Unable to prepare alert query.");
 }
 
 $alertStmt->bind_param("s", $patientId);
 
 if (!$alertStmt->execute()) {
+
     $alertStmt->close();
+
     die("Unable to load patient alerts.");
 }
 
 $alertResult = $alertStmt->get_result();
 
 while ($row = $alertResult->fetch_assoc()) {
+
     $alerts[] = $row;
 }
 
@@ -246,11 +268,11 @@ function report_value($row, $column, $default = "-")
 
 
 // -------------------------------------------------------
-// 10. OWNER USERNAME
+// 10. GET RAVI4 OWNER USERNAME
 // -------------------------------------------------------
 
 $ownerUsername =
-    $_SESSION["ravi3_owner_username"] ?? "Owner";
+    $_SESSION["ravi4_owner_username"] ?? "Owner";
 
 ?>
 
@@ -264,7 +286,7 @@ $ownerUsername =
 <meta name="viewport"
       content="width=device-width, initial-scale=1.0">
 
-<title>Patient Report - Ravi3</title>
+<title>Patient Report - Ravi4</title>
 
 <style>
 
@@ -307,6 +329,8 @@ body {
     background: #1769aa;
     padding: 10px 14px;
     border-radius: 5px;
+    display: inline-block;
+    margin: 3px;
 }
 
 .card {
@@ -698,6 +722,7 @@ tr:nth-child(even) {
     <div class="card">
 
         <p class="small">
+            Ravi4 Patient Monitoring Report.
             This report is read-only. No patient records,
             device assignments or historical readings
             have been changed.
