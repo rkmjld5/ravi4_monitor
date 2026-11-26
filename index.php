@@ -1,67 +1,39 @@
 <?php
 /*
-    PROJECT: ravi2_patient
-    FILE: index.php
+=========================================================
+RAVI3 PATIENT MONITORING SYSTEM
+File: index.php
 
-    PURPOSE:
-    Main patient monitoring dashboard.
+MAIN PATIENT DASHBOARD
 
-    FEATURES:
-    1. Displays the latest monitoring readings.
-    2. Displays the latest 10 patient alerts.
-    3. Refreshes automatically every 5 seconds.
-    4. Checks patient and device authorization.
-    5. Provides navigation to other patient pages.
+Displays:
+1. Room temperature
+2. Humidity
+3. Heart rate (BPM)
+4. SpO2
+5. Body temperature
+6. Recent dashboard alerts
 
-    DATABASE TABLES USED:
-    - monitoring_readings
-    - alerts
+The dashboard displays only readings belonging to
+the logged-in patient's assigned device.
 
-    IMPORTANT:
-    This program does not change any database records.
-    It does not modify patient_remote.onrender.com.
+No Firebase or mobile push notification code.
+=========================================================
 */
 
-// --------------------------------------------------
-// 1. CHECK PATIENT LOGIN AND ACCESS PERMISSION
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 1. VERIFY PATIENT ACCESS
+// -------------------------------------------------------
 
 require_once __DIR__ . "/patient_access.php";
 
-// patient_access.php also loads config.php.
-// The database connection is available as $conn.
 
-// --------------------------------------------------
-// 2. GET PATIENT INFORMATION FROM SESSION
-// --------------------------------------------------
+// -------------------------------------------------------
+// 2. GET LATEST MONITORING READING
+// -------------------------------------------------------
 
-$patient_id   = $_SESSION["ravi2_patient_id"];
-$patient_name = $_SESSION["ravi2_patient_name"];
-$device_id    = $_SESSION["ravi2_device_id"];
-
-// --------------------------------------------------
-// 3. PREPARE VARIABLES FOR DISPLAY
-// --------------------------------------------------
-
-$reading = null;
-$alerts = [];
-
-$reading_error = "";
-$alert_error = "";
-
-// --------------------------------------------------
-// 4. GET THE LATEST MONITORING READING
-// --------------------------------------------------
-
-/*
-   We select only readings belonging to this patient
-   and this patient's assigned device.
-
-   The newest reading is selected using:
-   recorded_at DESC, id DESC
-*/
-
-$reading_sql = "
+$sql = "
     SELECT
         id,
         room_temperature,
@@ -72,77 +44,35 @@ $reading_sql = "
         mode,
         recorded_at
     FROM monitoring_readings
-    WHERE
-        patient_id = ?
-        AND device_id = ?
+    WHERE patient_id = ?
+      AND device_id = ?
     ORDER BY recorded_at DESC, id DESC
     LIMIT 1
 ";
 
-$reading_stmt = $conn->prepare($reading_sql);
+$stmt = $db->prepare($sql);
 
-if (!$reading_stmt) {
-
-    error_log("Dashboard reading query error: " . $conn->error);
-
-    $reading_error = "Unable to load monitoring readings.";
-
-} else {
-
-    $reading_stmt->bind_param("ss", $patient_id, $device_id);
-
-    if (!$reading_stmt->execute()) {
-
-        error_log("Dashboard reading execution error: " . $reading_stmt->error);
-
-        $reading_error = "Unable to load monitoring readings.";
-
-    } else {
-
-        $reading_stmt->bind_result(
-            $reading_id,
-            $room_temperature,
-            $humidity,
-            $bpm,
-            $spo2,
-            $body_temperature,
-            $mode,
-            $recorded_at
-        );
-
-        if ($reading_stmt->fetch()) {
-
-            $reading = [
-                "id" => $reading_id,
-                "room_temperature" => $room_temperature,
-                "humidity" => $humidity,
-                "bpm" => $bpm,
-                "spo2" => $spo2,
-                "body_temperature" => $body_temperature,
-                "mode" => $mode,
-                "recorded_at" => $recorded_at
-            ];
-        }
-    }
-
-    $reading_stmt->close();
+if (!$stmt) {
+    error_log("Ravi3 dashboard reading query error: " . $db->error);
+    die("Unable to load monitoring readings.");
 }
 
-// --------------------------------------------------
-// 5. GET THE LATEST 10 PATIENT ALERTS
-// --------------------------------------------------
+$stmt->bind_param("ss", $patient_id, $device_id);
+$stmt->execute();
 
-/*
-   Alerts are selected using patient_id.
+$result = $stmt->get_result();
+$reading = $result->fetch_assoc();
 
-   This allows the patient to see alerts generated
-   for their monitoring account.
+$stmt->close();
 
-   No email or mobile notification is sent here.
-   Alerts are displayed only on this web dashboard.
-*/
 
-$alert_sql = "
+// -------------------------------------------------------
+// 3. GET LATEST DASHBOARD ALERTS
+// -------------------------------------------------------
+
+$alerts = [];
+
+$alertSql = "
     SELECT
         id,
         parameter_name,
@@ -154,96 +84,59 @@ $alert_sql = "
         acknowledged_at
     FROM alerts
     WHERE patient_id = ?
+      AND device_id = ?
     ORDER BY recorded_at DESC, id DESC
     LIMIT 10
 ";
 
-$alert_stmt = $conn->prepare($alert_sql);
+$alertStmt = $db->prepare($alertSql);
 
-if (!$alert_stmt) {
-
-    error_log("Dashboard alert query error: " . $conn->error);
-
-    $alert_error = "Unable to load alerts.";
-
+if (!$alertStmt) {
+    error_log("Ravi3 dashboard alert query error: " . $db->error);
 } else {
 
-    $alert_stmt->bind_param("s", $patient_id);
+    $alertStmt->bind_param("ss", $patient_id, $device_id);
+    $alertStmt->execute();
 
-    if (!$alert_stmt->execute()) {
+    $alertResult = $alertStmt->get_result();
 
-        error_log("Dashboard alert execution error: " . $alert_stmt->error);
-
-        $alert_error = "Unable to load alerts.";
-
-    } else {
-
-        $alert_stmt->bind_result(
-            $alert_id,
-            $parameter_name,
-            $measured_value,
-            $alert_message,
-            $alert_recorded_at,
-            $alert_device_id,
-            $acknowledged,
-            $acknowledged_at
-        );
-
-        while ($alert_stmt->fetch()) {
-
-            $alerts[] = [
-                "id" => $alert_id,
-                "parameter_name" => $parameter_name,
-                "measured_value" => $measured_value,
-                "alert_message" => $alert_message,
-                "recorded_at" => $alert_recorded_at,
-                "device_id" => $alert_device_id,
-                "acknowledged" => $acknowledged,
-                "acknowledged_at" => $acknowledged_at
-            ];
-        }
+    while ($row = $alertResult->fetch_assoc()) {
+        $alerts[] = $row;
     }
 
-    $alert_stmt->close();
+    $alertStmt->close();
 }
 
-// --------------------------------------------------
-// 6. SAFE OUTPUT FUNCTION
-// --------------------------------------------------
 
-/*
-   This function protects the dashboard when displaying
-   text obtained from the database.
-*/
+// -------------------------------------------------------
+// 4. HELPER TO DISPLAY SAFE VALUES
+// -------------------------------------------------------
 
-function dashboard_escape($value) {
-
-    if ($value === null || $value === "") {
-        return "--";
-    }
-
+function ravi3_h($value)
+{
     return htmlspecialchars(
-        (string)$value,
+        (string)($value ?? ""),
         ENT_QUOTES,
         "UTF-8"
     );
 }
 
-// --------------------------------------------------
-// 7. DISPLAY A READING VALUE
-// --------------------------------------------------
 
-function show_reading($value, $unit = "") {
+// -------------------------------------------------------
+// 5. FORMAT READING VALUES
+// -------------------------------------------------------
 
-    if ($value === null || $value === "") {
+function ravi3_reading($reading, $field, $unit)
+{
+    if (
+        !$reading ||
+        !isset($reading[$field]) ||
+        $reading[$field] === null
+    ) {
         return "--";
     }
 
-    return htmlspecialchars(
-        (string)$value,
-        ENT_QUOTES,
-        "UTF-8"
-    ) . $unit;
+    return ravi3_h($reading[$field]) . " " . $unit;
 }
 
 ?>
@@ -255,11 +148,12 @@ function show_reading($value, $unit = "") {
 
     <meta charset="UTF-8">
 
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
+
+    <title>Ravi3 Patient Dashboard</title>
 
     <meta http-equiv="refresh" content="5">
-
-    <title>Patient Monitoring Dashboard</title>
 
     <style>
 
@@ -268,211 +162,139 @@ function show_reading($value, $unit = "") {
         }
 
         body {
-            font-family: Arial, sans-serif;
-            background: #f1f4f8;
             margin: 0;
+            padding: 15px;
+            font-family: Arial, sans-serif;
+            background: #f1f5f9;
             color: #263238;
         }
 
-        .header {
-            background: #1769aa;
-            color: white;
-            padding: 18px 20px;
+        .container {
+            max-width: 1100px;
+            margin: auto;
         }
 
-        .header h1 {
-            margin: 0;
-            font-size: 23px;
+        .header {
+            background: #174a75;
+            color: white;
+            padding: 20px;
+            border-radius: 9px;
+            margin-bottom: 20px;
+        }
+
+        .header h2 {
+            margin: 0 0 10px 0;
         }
 
         .header p {
-            margin: 6px 0 0;
-            font-size: 14px;
-        }
-
-        .container {
-            width: 94%;
-            max-width: 1150px;
-            margin: 22px auto;
-        }
-
-        .patient-info {
-            background: white;
-            padding: 18px;
-            border-radius: 8px;
-            margin-bottom: 20px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.07);
-        }
-
-        .patient-info h2 {
-            margin: 0 0 12px;
-            color: #1769aa;
-        }
-
-        .patient-details {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 20px;
-            font-size: 14px;
-        }
-
-        .section-title {
-            margin: 25px 0 14px;
-            font-size: 20px;
-            color: #263b55;
-        }
-
-        .reading-grid {
-            display: grid;
-            grid-template-columns: repeat(3, 1fr);
-            gap: 15px;
-        }
-
-        .reading-card {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.07);
-            border-left: 4px solid #1769aa;
-        }
-
-        .reading-label {
-            color: #666;
-            font-size: 14px;
-            margin-bottom: 10px;
-        }
-
-        .reading-value {
-            font-size: 28px;
-            font-weight: bold;
-            color: #1769aa;
-        }
-
-        .reading-unit {
-            font-size: 14px;
-            color: #777;
-        }
-
-        .reading-time {
-            margin-top: 18px;
-            padding: 15px;
-            background: white;
-            border-radius: 8px;
-            font-size: 13px;
-            color: #555;
-        }
-
-        .message {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            margin-bottom: 15px;
-        }
-
-        .alert-card {
-            background: white;
-            border-radius: 8px;
-            padding: 16px;
-            margin-bottom: 12px;
-            border-left: 4px solid #d9534f;
-            box-shadow: 0 2px 5px rgba(0,0,0,0.06);
-        }
-
-        .alert-card.acknowledged {
-            border-left-color: #198754;
-        }
-
-        .alert-title {
-            font-weight: bold;
-            font-size: 16px;
-            margin-bottom: 7px;
-        }
-
-        .alert-message {
-            margin-bottom: 10px;
-            line-height: 1.5;
-        }
-
-        .alert-details {
-            color: #777;
-            font-size: 12px;
-            line-height: 1.7;
-        }
-
-        .status {
-            display: inline-block;
-            padding: 5px 9px;
-            border-radius: 4px;
-            font-size: 12px;
-            font-weight: bold;
-        }
-
-        .status-pending {
-            background: #fff0d5;
-            color: #8a5700;
-        }
-
-        .status-done {
-            background: #d9f2e3;
-            color: #146c43;
+            margin: 5px 0;
         }
 
         .navigation {
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-            margin: 22px 0;
+            margin-top: 15px;
         }
 
         .navigation a {
             display: inline-block;
-            background: #1769aa;
-            color: white;
+            background: white;
+            color: #174a75;
+            padding: 9px 13px;
+            margin: 4px 3px 0 0;
             text-decoration: none;
-            padding: 11px 16px;
             border-radius: 5px;
             font-size: 14px;
         }
 
         .navigation a:hover {
-            background: #10558c;
+            background: #dceaf5;
         }
 
-        .navigation a.logout {
-            background: #b52b35;
+        .section-title {
+            margin: 22px 0 12px;
+            color: #174a75;
         }
 
-        .navigation a.logout:hover {
-            background: #8f1f28;
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(
+                auto-fit,
+                minmax(190px, 1fr)
+            );
+            gap: 15px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 9px;
+            box-shadow: 0 2px 7px rgba(0,0,0,0.08);
+        }
+
+        .card h3 {
+            margin: 0 0 12px;
+            color: #526575;
+            font-size: 16px;
+        }
+
+        .value {
+            font-size: 27px;
+            font-weight: bold;
+            color: #174a75;
+        }
+
+        .small {
+            font-size: 13px;
+            color: #667788;
+            margin-top: 10px;
+        }
+
+        .table-wrapper {
+            overflow-x: auto;
+            background: white;
+            border-radius: 9px;
+            box-shadow: 0 2px 7px rgba(0,0,0,0.08);
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            min-width: 650px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e3e8ee;
+            font-size: 14px;
+        }
+
+        th {
+            background: #e8f0f7;
+            color: #174a75;
+        }
+
+        .alert-pending {
+            color: #b00020;
+            font-weight: bold;
+        }
+
+        .alert-acknowledged {
+            color: #18733b;
+            font-weight: bold;
+        }
+
+        .no-data {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            color: #667788;
         }
 
         .footer {
             text-align: center;
-            padding: 20px;
-            color: #777;
-            font-size: 12px;
-        }
-
-        @media (max-width: 700px) {
-
-            .reading-grid {
-                grid-template-columns: repeat(2, 1fr);
-            }
-
-            .header h1 {
-                font-size: 19px;
-            }
-        }
-
-        @media (max-width: 420px) {
-
-            .reading-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .patient-details {
-                gap: 10px;
-            }
+            color: #778899;
+            font-size: 13px;
+            margin: 25px 0;
         }
 
     </style>
@@ -481,350 +303,276 @@ function show_reading($value, $unit = "") {
 
 <body>
 
-    <!-- -----------------------------------------
-         TOP HEADER
-    ------------------------------------------ -->
+<div class="container">
+
+
+    <!-- -----------------------------------------------
+         PATIENT HEADER
+    ------------------------------------------------ -->
 
     <div class="header">
 
-        <h1>Patient Monitoring System</h1>
-
-        <p>Patient Dashboard</p>
-
-    </div>
-
-
-    <div class="container">
-
-        <!-- -------------------------------------
-             PATIENT INFORMATION
-        -------------------------------------- -->
-
-        <div class="patient-info">
-
-            <h2>
-                Welcome, <?php echo dashboard_escape($patient_name); ?>
-            </h2>
-
-            <div class="patient-details">
-
-                <div>
-                    <strong>Patient ID:</strong>
-                    <?php echo dashboard_escape($patient_id); ?>
-                </div>
-
-                <div>
-                    <strong>Device ID:</strong>
-                    <?php echo dashboard_escape($device_id); ?>
-                </div>
-
-                <div>
-                    <strong>Account:</strong>
-                    Active
-                </div>
-
-            </div>
-
-        </div>
-
-
-        <!-- -------------------------------------
-             LATEST MONITORING READINGS
-        -------------------------------------- -->
-
-        <h2 class="section-title">
-            Latest Monitoring Readings
-        </h2>
-
-        <?php if ($reading_error !== ""): ?>
-
-            <div class="message">
-                <?php echo dashboard_escape($reading_error); ?>
-            </div>
-
-        <?php elseif ($reading === null): ?>
-
-            <div class="message">
-                No monitoring readings are available yet.
-                Please check that your ESP32 device is connected.
-            </div>
-
-        <?php else: ?>
-
-            <div class="reading-grid">
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Heart Rate
-                    </div>
-
-                    <div class="reading-value">
-                        <?php echo show_reading($reading["bpm"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        BPM
-                    </div>
-
-                </div>
-
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Blood Oxygen (SpO2)
-                    </div>
-
-                    <div class="reading-value">
-                        <?php echo show_reading($reading["spo2"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        %
-                    </div>
-
-                </div>
-
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Body Temperature
-                    </div>
-
-                    <div class="reading-value">
-                        <?php echo show_reading($reading["body_temperature"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        °C
-                    </div>
-
-                </div>
-
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Room Temperature
-                    </div>
-
-                    <div class="reading-value">
-                        <?php echo show_reading($reading["room_temperature"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        °C
-                    </div>
-
-                </div>
-
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Humidity
-                    </div>
-
-                    <div class="reading-value">
-                        <?php echo show_reading($reading["humidity"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        %
-                    </div>
-
-                </div>
-
-
-                <div class="reading-card">
-
-                    <div class="reading-label">
-                        Device Mode
-                    </div>
-
-                    <div class="reading-value" style="font-size:22px;">
-                        <?php echo dashboard_escape($reading["mode"]); ?>
-                    </div>
-
-                    <div class="reading-unit">
-                        ESP32 monitoring mode
-                    </div>
-
-                </div>
-
-            </div>
-
-
-            <div class="reading-time">
-
-                <strong>Last Reading:</strong>
-
-                <?php echo dashboard_escape($reading["recorded_at"]); ?>
-
-            </div>
-
-        <?php endif; ?>
-
-
-        <!-- -------------------------------------
-             PATIENT WEB ALERTS
-        -------------------------------------- -->
-
-        <h2 class="section-title">
-            Latest Web Alerts
-        </h2>
-
-        <?php if ($alert_error !== ""): ?>
-
-            <div class="message">
-                <?php echo dashboard_escape($alert_error); ?>
-            </div>
-
-        <?php elseif (count($alerts) === 0): ?>
-
-            <div class="message">
-                No alerts are available.
-            </div>
-
-        <?php else: ?>
-
-            <?php foreach ($alerts as $alert): ?>
-
-                <div class="alert-card <?php
-                    echo ((int)$alert["acknowledged"] === 1)
-                        ? "acknowledged"
-                        : "";
-                ?>">
-
-                    <div class="alert-title">
-
-                        <?php
-                            echo dashboard_escape(
-                                $alert["parameter_name"]
-                            );
-                        ?>
-
-                        &nbsp;
-
-                        <?php if ((int)$alert["acknowledged"] === 1): ?>
-
-                            <span class="status status-done">
-                                Acknowledged
-                            </span>
-
-                        <?php else: ?>
-
-                            <span class="status status-pending">
-                                Not Acknowledged
-                            </span>
-
-                        <?php endif; ?>
-
-                    </div>
-
-
-                    <div class="alert-message">
-
-                        <?php
-                            echo dashboard_escape(
-                                $alert["alert_message"]
-                            );
-                        ?>
-
-                    </div>
-
-
-                    <div class="alert-details">
-
-                        <strong>Measured Value:</strong>
-
-                        <?php
-                            echo dashboard_escape(
-                                $alert["measured_value"]
-                            );
-                        ?>
-
-                        <br>
-
-                        <strong>Device:</strong>
-
-                        <?php
-                            echo dashboard_escape(
-                                $alert["device_id"]
-                            );
-                        ?>
-
-                        <br>
-
-                        <strong>Alert Time:</strong>
-
-                        <?php
-                            echo dashboard_escape(
-                                $alert["recorded_at"]
-                            );
-                        ?>
-
-                        <?php if ((int)$alert["acknowledged"] === 1): ?>
-
-                            <br>
-
-                            <strong>Acknowledged At:</strong>
-
-                            <?php
-                                echo dashboard_escape(
-                                    $alert["acknowledged_at"]
-                                );
-                            ?>
-
-                        <?php endif; ?>
-
-                    </div>
-
-                </div>
-
-            <?php endforeach; ?>
-
-        <?php endif; ?>
-
-
-        <!-- -------------------------------------
-             NAVIGATION LINKS
-        -------------------------------------- -->
+        <h2>Patient Monitoring Dashboard</h2>
+
+        <p>
+            Patient:
+            <strong><?php echo ravi3_h($patient_name); ?></strong>
+        </p>
+
+        <p>
+            Patient ID:
+            <?php echo ravi3_h($patient_id); ?>
+        </p>
+
+        <p>
+            Device ID:
+            <?php echo ravi3_h($device_id); ?>
+        </p>
 
         <div class="navigation">
 
-            <a href="history.php">
-                Reading History
-            </a>
+            <a href="index.php">Dashboard</a>
 
-            <a href="ecg_history.php">
-                ECG History
-            </a>
+            <a href="history.php">Reading History</a>
 
-            <a href="alerts.php">
-                All Alerts
-            </a>
+            <a href="ecg_history.php">ECG History</a>
 
-            <a href="logout.php" class="logout">
-                Logout
-            </a>
+            <a href="alerts.php">All Alerts</a>
+
+            <a href="logout.php">Logout</a>
 
         </div>
 
     </div>
 
 
+    <!-- -----------------------------------------------
+         LATEST READINGS
+    ------------------------------------------------ -->
+
+    <h3 class="section-title">Latest Patient Readings</h3>
+
+    <?php if ($reading): ?>
+
+        <div class="grid">
+
+            <div class="card">
+
+                <h3>Room Temperature</h3>
+
+                <div class="value">
+                    <?php
+                    echo ravi3_reading(
+                        $reading,
+                        "room_temperature",
+                        "°C"
+                    );
+                    ?>
+                </div>
+
+            </div>
+
+
+            <div class="card">
+
+                <h3>Humidity</h3>
+
+                <div class="value">
+                    <?php
+                    echo ravi3_reading(
+                        $reading,
+                        "humidity",
+                        "%"
+                    );
+                    ?>
+                </div>
+
+            </div>
+
+
+            <div class="card">
+
+                <h3>Heart Rate</h3>
+
+                <div class="value">
+                    <?php
+                    echo ravi3_reading(
+                        $reading,
+                        "bpm",
+                        "BPM"
+                    );
+                    ?>
+                </div>
+
+            </div>
+
+
+            <div class="card">
+
+                <h3>SpO2</h3>
+
+                <div class="value">
+                    <?php
+                    echo ravi3_reading(
+                        $reading,
+                        "spo2",
+                        "%"
+                    );
+                    ?>
+                </div>
+
+            </div>
+
+
+            <div class="card">
+
+                <h3>Body Temperature</h3>
+
+                <div class="value">
+                    <?php
+                    echo ravi3_reading(
+                        $reading,
+                        "body_temperature",
+                        "°C"
+                    );
+                    ?>
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <div class="card" style="margin-top:15px;">
+
+            <strong>Last Reading:</strong>
+
+            <?php echo ravi3_h($reading["recorded_at"]); ?>
+
+            <br><br>
+
+            <strong>Device Mode:</strong>
+
+            <?php echo ravi3_h($reading["mode"]); ?>
+
+        </div>
+
+    <?php else: ?>
+
+        <div class="no-data">
+            No monitoring readings are available for this patient
+            and device yet.
+        </div>
+
+    <?php endif; ?>
+
+
+    <!-- -----------------------------------------------
+         RECENT DASHBOARD ALERTS
+    ------------------------------------------------ -->
+
+    <h3 class="section-title">Recent Alerts</h3>
+
+    <?php if (count($alerts) > 0): ?>
+
+        <div class="table-wrapper">
+
+            <table>
+
+                <thead>
+
+                    <tr>
+                        <th>Date / Time</th>
+                        <th>Parameter</th>
+                        <th>Measured Value</th>
+                        <th>Alert Message</th>
+                        <th>Status</th>
+                    </tr>
+
+                </thead>
+
+                <tbody>
+
+                <?php foreach ($alerts as $alert): ?>
+
+                    <tr>
+
+                        <td>
+                            <?php
+                            echo ravi3_h($alert["recorded_at"]);
+                            ?>
+                        </td>
+
+                        <td>
+                            <?php
+                            echo ravi3_h($alert["parameter_name"]);
+                            ?>
+                        </td>
+
+                        <td>
+                            <?php
+                            echo ravi3_h($alert["measured_value"]);
+                            ?>
+                        </td>
+
+                        <td>
+                            <?php
+                            echo ravi3_h($alert["alert_message"]);
+                            ?>
+                        </td>
+
+                        <td>
+
+                            <?php if ((int)$alert["acknowledged"] === 1): ?>
+
+                                <span class="alert-acknowledged">
+                                    Acknowledged
+                                </span>
+
+                            <?php else: ?>
+
+                                <span class="alert-pending">
+                                    Pending
+                                </span>
+
+                            <?php endif; ?>
+
+                        </td>
+
+                    </tr>
+
+                <?php endforeach; ?>
+
+                </tbody>
+
+            </table>
+
+        </div>
+
+    <?php else: ?>
+
+        <div class="no-data">
+            No alerts are available for this patient.
+        </div>
+
+    <?php endif; ?>
+
+
+    <!-- -----------------------------------------------
+         FOOTER
+    ------------------------------------------------ -->
+
     <div class="footer">
 
-        Ravi2 Patient Monitoring System
+        Ravi3 Patient Monitoring System
 
         <br>
 
         Dashboard refreshes automatically every 5 seconds.
 
     </div>
+
+</div>
 
 </body>
 </html>
