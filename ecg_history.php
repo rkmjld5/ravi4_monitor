@@ -8,14 +8,16 @@ PURPOSE:
 1. Display historical ECG recordings.
 2. Show recording date and time.
 3. Show sample rate and sample count.
-4. Display ECG waveform.
-5. Restrict access to the logged-in patient's device.
+4. Display ECG waveform as a continuous line graph.
+5. Download ECG sample data as CSV.
+6. Download ECG graph as PNG.
+7. Print / save ECG graph as PDF.
+8. Restrict access to the logged-in patient's device.
 
-IMPORTANT:
-This version assumes ECG data is stored in:
+DATABASE TABLE:
     ecg_readings
 
-Expected columns:
+EXPECTED COLUMNS:
     id
     patient_id
     device_id
@@ -117,16 +119,14 @@ foreach ($recordings as $recording) {
     foreach ($samples as $sample) {
 
         if (is_numeric($sample)) {
-
             $validSamples[] = (float)$sample;
-
         }
     }
 
     $ecgData[] = [
         "id" => (int)$recording["id"],
-        "date" => $recording["recorded_at"],
-        "mode" => $recording["mode"],
+        "date" => (string)$recording["recorded_at"],
+        "mode" => (string)$recording["mode"],
         "sample_rate" => (int)$recording["sample_rate"],
         "sample_count" => (int)$recording["sample_count"],
         "samples" => $validSamples
@@ -232,11 +232,66 @@ foreach ($recordings as $recording) {
             color: #667788;
         }
 
+        /* -----------------------------------------------
+           ECG DOWNLOAD BUTTONS
+        ------------------------------------------------ */
+
+        .download-buttons {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-top: 15px;
+        }
+
+        .download-buttons button {
+            border: none;
+            padding: 11px 16px;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 14px;
+            font-weight: bold;
+            color: white;
+        }
+
+        .download-buttons button:hover {
+            opacity: 0.85;
+        }
+
+        .csv-button {
+            background: #16834a;
+        }
+
+        .png-button {
+            background: #1769aa;
+        }
+
+        .pdf-button {
+            background: #bd3434;
+        }
+
+        .download-note {
+            color: #667788;
+            font-size: 12px;
+            margin-top: 10px;
+        }
+
         .footer {
             text-align: center;
             color: #778899;
             font-size: 13px;
             margin: 25px 0;
+        }
+
+        @media (max-width: 600px) {
+
+            .download-buttons {
+                flex-direction: column;
+            }
+
+            .download-buttons button {
+                width: 100%;
+            }
+
         }
 
     </style>
@@ -308,6 +363,11 @@ foreach ($recordings as $recording) {
 
         Newest recording appears first.
 
+        <br><br>
+
+        Each recording has its own CSV, PNG and PDF
+        download buttons.
+
     </div>
 
 
@@ -365,107 +425,53 @@ foreach ($recordings as $recording) {
 
                 <?php
                 $samples = $ecgData[$index]["samples"];
+                $recordingId = (int)$recording["id"];
                 ?>
 
                 <?php if (count($samples) > 1): ?>
 
+                    <!-- ECG GRAPH -->
+
                     <canvas
-                        id="ecg_canvas_<?php echo (int)$recording["id"]; ?>"
+                        id="ecg_canvas_<?php echo $recordingId; ?>"
                         width="1000"
                         height="220">
                     </canvas>
 
-                    <script>
-                    (function () {
 
-                        const samples = <?php
-                            echo json_encode(
-                                $samples,
-                                JSON_HEX_TAG |
-                                JSON_HEX_APOS |
-                                JSON_HEX_QUOT |
-                                JSON_HEX_AMP
-                            );
-                        ?>;
+                    <!-- --------------------------------
+                         THREE DOWNLOAD BUTTONS
+                    --------------------------------- -->
 
-                        const canvas = document.getElementById(
-                            "ecg_canvas_<?php
-                            echo (int)$recording["id"];
-                            ?>"
-                        );
+                    <div class="download-buttons">
 
-                        const ctx = canvas.getContext("2d");
+                        <button
+                            type="button"
+                            class="csv-button"
+                            onclick="downloadECGCSV(<?php echo $recordingId; ?>)">
+                            Download CSV
+                        </button>
 
-                        const width = canvas.width;
-                        const height = canvas.height;
+                        <button
+                            type="button"
+                            class="png-button"
+                            onclick="downloadECGPNG(<?php echo $recordingId; ?>)">
+                            Download PNG
+                        </button>
 
-                        // Draw a light ECG grid.
-                        ctx.strokeStyle = "#f1dede";
-                        ctx.lineWidth = 1;
+                        <button
+                            type="button"
+                            class="pdf-button"
+                            onclick="downloadECGPDF(<?php echo $recordingId; ?>)">
+                            Download PDF
+                        </button>
 
-                        for (let x = 0; x < width; x += 20) {
+                    </div>
 
-                            ctx.beginPath();
-                            ctx.moveTo(x, 0);
-                            ctx.lineTo(x, height);
-                            ctx.stroke();
-
-                        }
-
-                        for (let y = 0; y < height; y += 20) {
-
-                            ctx.beginPath();
-                            ctx.moveTo(0, y);
-                            ctx.lineTo(width, y);
-                            ctx.stroke();
-
-                        }
-
-                        if (!samples.length) {
-                            return;
-                        }
-
-                        let minValue = Math.min(...samples);
-                        let maxValue = Math.max(...samples);
-
-                        // Prevent division by zero for flat recordings.
-                        if (maxValue === minValue) {
-                            maxValue = minValue + 1;
-                        }
-
-                        const padding = 10;
-
-                        ctx.strokeStyle = "#d00000";
-                        ctx.lineWidth = 1.5;
-                        ctx.beginPath();
-
-                        for (let i = 0; i < samples.length; i++) {
-
-                            const x =
-                                padding +
-                                (i / (samples.length - 1)) *
-                                (width - padding * 2);
-
-                            const y =
-                                height - padding -
-                                (
-                                    (samples[i] - minValue) /
-                                    (maxValue - minValue)
-                                ) *
-                                (height - padding * 2);
-
-                            if (i === 0) {
-                                ctx.moveTo(x, y);
-                            } else {
-                                ctx.lineTo(x, y);
-                            }
-
-                        }
-
-                        ctx.stroke();
-
-                    })();
-                    </script>
+                    <div class="download-note">
+                        PDF opens a print-ready report.
+                        Select "Save as PDF" in the print window.
+                    </div>
 
                 <?php else: ?>
 
@@ -503,6 +509,489 @@ foreach ($recordings as $recording) {
     </div>
 
 </div>
+
+
+<!-- =====================================================
+     5. ECG DATA FOR JAVASCRIPT
+===================================================== -->
+
+<script>
+
+const ECG_RECORDINGS = <?php
+
+echo json_encode(
+    $ecgData,
+    JSON_HEX_TAG |
+    JSON_HEX_APOS |
+    JSON_HEX_QUOT |
+    JSON_HEX_AMP |
+    JSON_INVALID_UTF8_SUBSTITUTE
+);
+
+?>;
+
+
+// -------------------------------------------------------
+// 6. DRAW ECG LINE GRAPHS
+// -------------------------------------------------------
+
+function drawECGGraph(recording) {
+
+    const samples = recording.samples;
+
+    const canvas = document.getElementById(
+        "ecg_canvas_" + recording.id
+    );
+
+    if (!canvas || samples.length < 2) {
+        return;
+    }
+
+    const ctx = canvas.getContext("2d");
+
+    const width = canvas.width;
+    const height = canvas.height;
+
+    // Clear graph.
+    ctx.clearRect(0, 0, width, height);
+
+    // Draw light ECG grid.
+    ctx.strokeStyle = "#f1dede";
+    ctx.lineWidth = 1;
+
+    for (let x = 0; x < width; x += 20) {
+
+        ctx.beginPath();
+        ctx.moveTo(x, 0);
+        ctx.lineTo(x, height);
+        ctx.stroke();
+
+    }
+
+    for (let y = 0; y < height; y += 20) {
+
+        ctx.beginPath();
+        ctx.moveTo(0, y);
+        ctx.lineTo(width, y);
+        ctx.stroke();
+
+    }
+
+    // Find minimum and maximum values.
+    let minValue = samples[0];
+    let maxValue = samples[0];
+
+    for (let i = 1; i < samples.length; i++) {
+
+        if (samples[i] < minValue) {
+            minValue = samples[i];
+        }
+
+        if (samples[i] > maxValue) {
+            maxValue = samples[i];
+        }
+
+    }
+
+    // Avoid division by zero for a flat recording.
+    if (maxValue === minValue) {
+        maxValue = minValue + 1;
+    }
+
+    const padding = 10;
+
+    // Draw continuous ECG waveform.
+    ctx.strokeStyle = "#d00000";
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+
+    for (let i = 0; i < samples.length; i++) {
+
+        const x =
+            padding +
+            (i / (samples.length - 1)) *
+            (width - padding * 2);
+
+        const y =
+            height - padding -
+            (
+                (samples[i] - minValue) /
+                (maxValue - minValue)
+            ) *
+            (height - padding * 2);
+
+        if (i === 0) {
+            ctx.moveTo(x, y);
+        } else {
+            ctx.lineTo(x, y);
+        }
+
+    }
+
+    ctx.stroke();
+
+}
+
+
+// Draw all available ECG graphs when page loads.
+document.addEventListener("DOMContentLoaded", function () {
+
+    ECG_RECORDINGS.forEach(function (recording) {
+        drawECGGraph(recording);
+    });
+
+});
+
+
+// -------------------------------------------------------
+// 7. FIND RECORDING BY ID
+// -------------------------------------------------------
+
+function getECGRecording(recordingId) {
+
+    return ECG_RECORDINGS.find(function (recording) {
+
+        return recording.id === recordingId;
+
+    });
+
+}
+
+
+// -------------------------------------------------------
+// 8. DOWNLOAD ECG DATA AS CSV
+// -------------------------------------------------------
+
+function downloadECGCSV(recordingId) {
+
+    const recording = getECGRecording(recordingId);
+
+    if (!recording || recording.samples.length === 0) {
+
+        alert("ECG sample data is not available.");
+
+        return;
+    }
+
+    const sampleRate = recording.sample_rate;
+
+    let csv = "";
+
+    csv += "Sample Number,Time (seconds),ECG Value\n";
+
+    recording.samples.forEach(function (value, index) {
+
+        let time = "";
+
+        if (sampleRate > 0) {
+            time = (index / sampleRate).toFixed(6);
+        }
+
+        csv +=
+            (index + 1) + "," +
+            time + "," +
+            value + "\n";
+
+    });
+
+    // UTF-8 BOM helps Excel display CSV correctly.
+    const blob = new Blob(
+        ["\uFEFF" + csv],
+        { type: "text/csv;charset=utf-8;" }
+    );
+
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+
+    link.href = url;
+
+    link.download =
+        "ECG_Recording_" + recordingId + ".csv";
+
+    document.body.appendChild(link);
+
+    link.click();
+
+    document.body.removeChild(link);
+
+    URL.revokeObjectURL(url);
+
+}
+
+
+// -------------------------------------------------------
+// 9. DOWNLOAD ECG GRAPH AS PNG
+// -------------------------------------------------------
+
+function downloadECGPNG(recordingId) {
+
+    const recording = getECGRecording(recordingId);
+
+    if (!recording) {
+
+        alert("ECG recording not found.");
+
+        return;
+    }
+
+    const canvas = document.getElementById(
+        "ecg_canvas_" + recordingId
+    );
+
+    if (!canvas) {
+
+        alert("ECG graph is not available.");
+
+        return;
+    }
+
+    const imageURL = canvas.toDataURL("image/png");
+
+    const link = document.createElement("a");
+
+    link.href = imageURL;
+
+    link.download =
+        "ECG_Recording_" + recordingId + ".png";
+
+    document.body.appendChild(link);
+
+    link.click();
+
+    document.body.removeChild(link);
+
+}
+
+
+// -------------------------------------------------------
+// 10. PRINT / SAVE ECG GRAPH AS PDF
+// -------------------------------------------------------
+
+function downloadECGPDF(recordingId) {
+
+    const recording = getECGRecording(recordingId);
+
+    if (!recording) {
+
+        alert("ECG recording not found.");
+
+        return;
+    }
+
+    const canvas = document.getElementById(
+        "ecg_canvas_" + recordingId
+    );
+
+    if (!canvas) {
+
+        alert("ECG graph is not available.");
+
+        return;
+    }
+
+    // Open a separate print window.
+    const printWindow = window.open(
+        "",
+        "_blank"
+    );
+
+    if (!printWindow) {
+
+        alert(
+            "The print window was blocked. " +
+            "Please allow pop-ups for this website and try again."
+        );
+
+        return;
+    }
+
+    // Convert the graph into an image.
+    const graphImage = canvas.toDataURL("image/png");
+
+    // Escape text before placing it into the report.
+    function escapeHTML(value) {
+
+        return String(value ?? "").replace(
+            /[&<>"']/g,
+            function (character) {
+
+                const replacements = {
+                    "&": "&amp;",
+                    "<": "&lt;",
+                    ">": "&gt;",
+                    '"': "&quot;",
+                    "'": "&#039;"
+                };
+
+                return replacements[character];
+
+            }
+        );
+
+    }
+
+    const patientName = <?php
+        echo json_encode(
+            $patient_name,
+            JSON_HEX_TAG |
+            JSON_HEX_APOS |
+            JSON_HEX_QUOT |
+            JSON_HEX_AMP
+        );
+    ?>;
+
+    const patientId = <?php
+        echo json_encode(
+            $patient_id,
+            JSON_HEX_TAG |
+            JSON_HEX_APOS |
+            JSON_HEX_QUOT |
+            JSON_HEX_AMP
+        );
+    ?>;
+
+    const deviceId = <?php
+        echo json_encode(
+            $device_id,
+            JSON_HEX_TAG |
+            JSON_HEX_APOS |
+            JSON_HEX_QUOT |
+            JSON_HEX_AMP
+        );
+    ?>;
+
+    const reportHTML = `
+        <!DOCTYPE html>
+        <html>
+        <head>
+
+            <meta charset="UTF-8">
+
+            <title>ECG Recording ${recordingId}</title>
+
+            <style>
+
+                body {
+                    font-family: Arial, sans-serif;
+                    padding: 25px;
+                    color: #263238;
+                }
+
+                h2 {
+                    color: #174a75;
+                    text-align: center;
+                }
+
+                .details {
+                    line-height: 1.9;
+                    margin-bottom: 25px;
+                }
+
+                img {
+                    width: 100%;
+                    border: 1px solid #ccc;
+                }
+
+                .footer {
+                    margin-top: 30px;
+                    text-align: center;
+                    font-size: 12px;
+                    color: #777;
+                }
+
+                @media print {
+
+                    body {
+                        padding: 10px;
+                    }
+
+                }
+
+            </style>
+
+        </head>
+
+        <body>
+
+            <h2>Patient ECG Report</h2>
+
+            <div class="details">
+
+                <strong>Patient:</strong>
+                ${escapeHTML(patientName)}
+                <br>
+
+                <strong>Patient ID:</strong>
+                ${escapeHTML(patientId)}
+                <br>
+
+                <strong>Device ID:</strong>
+                ${escapeHTML(deviceId)}
+                <br>
+
+                <strong>Recording ID:</strong>
+                ${recording.id}
+                <br>
+
+                <strong>Date / Time:</strong>
+                ${escapeHTML(recording.date)}
+                <br>
+
+                <strong>Sample Rate:</strong>
+                ${recording.sample_rate} samples/second
+                <br>
+
+                <strong>Sample Count:</strong>
+                ${recording.sample_count}
+                <br>
+
+                <strong>Mode:</strong>
+                ${escapeHTML(recording.mode)}
+
+            </div>
+
+            <h3>ECG Waveform</h3>
+
+            <img src="${graphImage}" alt="ECG Graph">
+
+            <div class="footer">
+                Ravi3 Patient Monitoring System
+            </div>
+
+        </body>
+        </html>
+    `;
+
+    printWindow.document.open();
+
+    printWindow.document.write(reportHTML);
+
+    printWindow.document.close();
+
+    // Wait for the report image to load before printing.
+    printWindow.onload = function () {
+
+        printWindow.focus();
+
+        printWindow.print();
+
+    };
+
+    // Fallback for browsers where onload fires before assignment.
+    setTimeout(function () {
+
+        if (!printWindow.closed) {
+
+            printWindow.focus();
+
+        }
+
+    }, 500);
+
+}
+
+</script>
 
 </body>
 </html>
