@@ -1,22 +1,23 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: owner.php
 
 PURPOSE:
-1. Allow the owner to view registered patients.
-2. Display their assigned ESP32 devices.
-3. Allow the owner to select a patient.
-4. Display recent monitoring readings and alerts.
-5. Provide a View Full Report link for every patient.
+1. Verify Ravi4 owner login.
+2. Display all registered patients.
+3. Display their assigned ESP32 devices.
+4. Allow the owner to select a patient.
+5. Display recent monitoring readings and alerts.
+6. Provide a link to the full patient report.
 
 READ ONLY:
-No patient accounts, device assignments or historical
-readings are modified by this page.
+This page does not modify patient records,
+device assignments, monitoring readings or alerts.
 
-Database: patient_monitor
-Connection: config.php (MySQLi)
+IMPORTANT:
+This file uses Ravi4 session variables.
 =========================================================
 */
 
@@ -26,12 +27,12 @@ date_default_timezone_set("Asia/Kolkata");
 
 
 // -------------------------------------------------------
-// 1. CHECK OWNER LOGIN
+// 1. CHECK RAVI4 OWNER LOGIN
 // -------------------------------------------------------
 
 if (
-    empty($_SESSION["ravi3_owner_logged_in"]) ||
-    $_SESSION["ravi3_owner_logged_in"] !== true
+    empty($_SESSION["ravi4_owner_logged_in"]) ||
+    $_SESSION["ravi4_owner_logged_in"] !== true
 ) {
     header("Location: owner_login.php");
     exit;
@@ -87,13 +88,15 @@ function owner_get_columns($db, $table)
 
 
 // -------------------------------------------------------
-// 4. CHECK TABLE COLUMNS
+// 4. CHECK REQUIRED TABLE COLUMNS
 // -------------------------------------------------------
 
 $patientColumns = owner_get_columns($db, "patients");
+
 $deviceColumns = owner_get_columns($db, "patient_devices");
 
 $monitorColumns = owner_get_columns($db, "monitoring_readings");
+
 $alertColumns = owner_get_columns($db, "alerts");
 
 if (
@@ -120,11 +123,14 @@ $patientResult = $db->query("
 ");
 
 if (!$patientResult) {
-    error_log("Owner patient list error: " . $db->error);
+
+    error_log("Ravi4 owner patient list error: " . $db->error);
+
     die("Unable to load patient records.");
 }
 
 while ($patient = $patientResult->fetch_assoc()) {
+
     $patients[] = $patient;
 }
 
@@ -144,7 +150,9 @@ $deviceResult = $db->query("
 ");
 
 if (!$deviceResult) {
-    error_log("Owner device list error: " . $db->error);
+
+    error_log("Ravi4 owner device list error: " . $db->error);
+
     die("Unable to load device assignments.");
 }
 
@@ -153,6 +161,7 @@ while ($device = $deviceResult->fetch_assoc()) {
     $patientIdKey = (string)$device["patient_id"];
 
     if (!isset($deviceAssignments[$patientIdKey])) {
+
         $deviceAssignments[$patientIdKey] = [];
     }
 
@@ -193,6 +202,7 @@ function owner_patient_name($patient)
     foreach (["patient_name", "name", "full_name"] as $column) {
 
         if (!empty($patient[$column])) {
+
             return $patient[$column];
         }
     }
@@ -202,7 +212,7 @@ function owner_patient_name($patient)
 
 
 // -------------------------------------------------------
-// 9. GET SELECTED PATIENT DEVICE IDS
+// 9. GET SELECTED PATIENT DEVICE ASSIGNMENTS
 // -------------------------------------------------------
 
 $selectedDevices = [];
@@ -220,11 +230,15 @@ if ($selectedPatient !== null) {
 // -------------------------------------------------------
 
 $monitoringReadings = [];
+
 $monitoringError = "";
 
 if ($selectedPatient !== null) {
 
-    foreach (["patient_id", "device_id", "recorded_at"] as $column) {
+    foreach (
+        ["patient_id", "device_id", "recorded_at"]
+        as $column
+    ) {
 
         if (!in_array($column, $monitorColumns, true)) {
 
@@ -256,17 +270,24 @@ if ($selectedPatient !== null) {
                 $monitorResult = $monitorStmt->get_result();
 
                 while ($reading = $monitorResult->fetch_assoc()) {
+
                     $monitoringReadings[] = $reading;
                 }
 
+                $monitorResult->free();
+
             } else {
-                $monitoringError = "Unable to read monitoring records.";
+
+                $monitoringError =
+                    "Unable to read monitoring records.";
             }
 
             $monitorStmt->close();
 
         } else {
-            $monitoringError = "Unable to prepare monitoring query.";
+
+            $monitoringError =
+                "Unable to prepare monitoring query.";
         }
     }
 }
@@ -277,6 +298,7 @@ if ($selectedPatient !== null) {
 // -------------------------------------------------------
 
 $patientAlerts = [];
+
 $alertError = "";
 
 if ($selectedPatient !== null) {
@@ -313,16 +335,21 @@ if ($selectedPatient !== null) {
                 $alertResult = $alertStmt->get_result();
 
                 while ($alert = $alertResult->fetch_assoc()) {
+
                     $patientAlerts[] = $alert;
                 }
 
+                $alertResult->free();
+
             } else {
+
                 $alertError = "Unable to read alert records.";
             }
 
             $alertStmt->close();
 
         } else {
+
             $alertError = "Unable to prepare alert query.";
         }
     }
@@ -347,11 +374,11 @@ function owner_value($row, $column, $default = "-")
 
 
 // -------------------------------------------------------
-// 13. OWNER USERNAME
+// 13. GET RAVI4 OWNER USERNAME
 // -------------------------------------------------------
 
 $ownerUsername =
-    $_SESSION["ravi3_owner_username"] ?? "Owner";
+    $_SESSION["ravi4_owner_username"] ?? "Owner";
 
 ?>
 
@@ -364,7 +391,7 @@ $ownerUsername =
 
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 
-<title>Ravi3 Owner Dashboard</title>
+<title>Ravi4 Owner Dashboard</title>
 
 <style>
 
@@ -550,7 +577,7 @@ button:hover {
 
         <div>
 
-            <h2>Ravi3 Owner Dashboard</h2>
+            <h2>Ravi4 Owner Dashboard</h2>
 
             <div class="small" style="color:white;">
                 Logged in as:
@@ -657,7 +684,7 @@ button:hover {
                                         <?php
 
                                         $enabled =
-                                            !isset($assignment["enabled"]) ||
+                                            isset($assignment["enabled"]) &&
                                             (int)$assignment["enabled"] === 1;
 
                                         ?>
@@ -1002,7 +1029,7 @@ button:hover {
     <div class="card">
 
         <p class="small">
-            Ravi3 Owner Dashboard.
+            Ravi4 Owner Dashboard.
             Patient records, device assignments and historical
             readings are displayed without modification.
         </p>
