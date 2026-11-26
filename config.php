@@ -1,56 +1,47 @@
 <?php
 /*
 =========================================================
- PROJECT : ravi2_patient.onrender.com
- FILE    : config.php
+RAVI3 PATIENT MONITORING SYSTEM
+File: config.php
 
- PURPOSE :
- 1. Connect to the existing patient_monitor database.
- 2. Use MySQLi (not PDO).
- 3. Set Indian time zone.
- 4. Start a secure PHP session.
- 5. Provide database connection as BOTH $db and $conn.
+Purpose:
+1. Start the Ravi3 patient-monitoring session.
+2. Connect to the MySQL database using MySQLi.
+3. Read database settings from Render environment variables.
+4. Set the database timezone to India Standard Time.
 
- IMPORTANT:
- Database passwords are stored in Render Environment
- Variables, NOT inside this PHP program.
-
- EXISTING DATABASE:
- patient_monitor
-
- TIME ZONE:
- Asia/Kolkata
+IMPORTANT:
+This file belongs to Ravi3 only.
+Do not replace the config.php file in Ravi2.
 =========================================================
 */
 
-// -------------------------------------------------------
-// 1. PHP SETTINGS
-// -------------------------------------------------------
-
-// Do not display database errors to website visitors.
-mysqli_report(MYSQLI_REPORT_OFF);
-
-// Indian time zone.
-date_default_timezone_set("Asia/Kolkata");
-
 
 // -------------------------------------------------------
-// 2. START PHP SESSION
+// 1. START RAVI3 SESSION
 // -------------------------------------------------------
+
+// Use a separate session name so Ravi3 does not interfere
+// with the existing Ravi2 project.
 
 if (session_status() === PHP_SESSION_NONE) {
 
-    // Check whether this website is using HTTPS.
-    $is_https = (
-        isset($_SERVER['HTTPS']) &&
-        $_SERVER['HTTPS'] !== 'off'
+    $isHttps = (
+        (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off')
+        ||
+        (
+            !empty($_SERVER['HTTP_X_FORWARDED_PROTO'])
+            && $_SERVER['HTTP_X_FORWARDED_PROTO'] === 'https'
+        )
     );
 
-    // Secure session cookie settings.
+    session_name("RAVI3SESSID");
+
     session_set_cookie_params([
         'lifetime' => 0,
         'path' => '/',
-        'secure' => $is_https,
+        'domain' => '',
+        'secure' => $isHttps,
         'httponly' => true,
         'samesite' => 'Lax'
     ]);
@@ -60,60 +51,78 @@ if (session_status() === PHP_SESSION_NONE) {
 
 
 // -------------------------------------------------------
-// 3. DATABASE SETTINGS
+// 2. DATABASE SETTINGS
 // -------------------------------------------------------
 
-// These values are stored in Render Environment Variables.
+// These values are obtained from Render environment
+// variables. Do not put database passwords in this file.
 
-$db_host = getenv("DB_HOST");
-$db_port = (int)(getenv("DB_PORT") ?: 4000);
-$db_name = getenv("DB_NAME") ?: "patient_monitor";
-$db_user = getenv("DB_USER");
-$db_password = getenv("DB_PASSWORD");
+$dbHost = getenv("DB_HOST");
+$dbPort = getenv("DB_PORT");
+$dbName = getenv("DB_NAME");
+$dbUser = getenv("DB_USER");
+$dbPassword = getenv("DB_PASSWORD");
 
-// TiDB connection normally uses SSL.
-$db_ssl = getenv("DB_SSL") !== "0";
-$db_ssl_ca = getenv("DB_SSL_CA");
+// TiDB/Render SSL settings.
+$dbSsl = getenv("DB_SSL");
+$dbSslCa = getenv("DB_SSL_CA");
 
 
-// Check that essential settings are available.
-if (!$db_host || !$db_user || $db_password === false) {
+// -------------------------------------------------------
+// 3. CHECK REQUIRED DATABASE SETTINGS
+// -------------------------------------------------------
 
-    error_log("Database settings are missing.");
+if (
+    !$dbHost ||
+    !$dbName ||
+    !$dbUser ||
+    $dbPassword === false
+) {
+    error_log("Ravi3: Database environment settings are incomplete.");
+    die("Database configuration error. Please contact the administrator.");
+}
 
-    http_response_code(500);
 
-    exit(
-        "Database settings are missing. " .
-        "Please check Render Environment Variables."
-    );
+// Use port 4000 if DB_PORT is not configured.
+if (!$dbPort) {
+    $dbPort = 4000;
+}
+
+$dbPort = (int)$dbPort;
+
+
+// -------------------------------------------------------
+// 4. CREATE MYSQLI CONNECTION
+// -------------------------------------------------------
+
+mysqli_report(MYSQLI_REPORT_OFF);
+
+$db = mysqli_init();
+
+if (!$db) {
+    error_log("Ravi3: Could not initialize MySQLi.");
+    die("Database connection could not be initialized.");
 }
 
 
 // -------------------------------------------------------
-// 4. CONNECT TO DATABASE
+// 5. ENABLE SSL WHEN CONFIGURED
 // -------------------------------------------------------
 
-$db = mysqli_init();
+$useSsl = (
+    $dbSsl !== false &&
+    strtolower(trim($dbSsl)) === "true"
+);
 
-// Connection timeout: 15 seconds.
-$db->options(MYSQLI_OPT_CONNECT_TIMEOUT, 15);
+if ($useSsl) {
 
-
-// Enable SSL when connecting to TiDB.
-$connection_flags = 0;
-
-if ($db_ssl) {
-
-    $connection_flags = MYSQLI_CLIENT_SSL;
-
-    // Use a CA certificate if its path is provided.
-    if ($db_ssl_ca) {
+    // If Render provides a CA certificate path, use it.
+    if ($dbSslCa && file_exists($dbSslCa)) {
 
         $db->ssl_set(
             null,
             null,
-            $db_ssl_ca,
+            $dbSslCa,
             null,
             null
         );
@@ -121,98 +130,66 @@ if ($db_ssl) {
 }
 
 
-// Establish database connection.
-$connected = $db->real_connect(
-    $db_host,
-    $db_user,
-    $db_password,
-    $db_name,
-    $db_port,
+// -------------------------------------------------------
+// 6. CONNECT TO DATABASE
+// -------------------------------------------------------
+
+$connectionFlags = 0;
+
+if ($useSsl) {
+    $connectionFlags |= MYSQLI_CLIENT_SSL;
+}
+
+$connected = @$db->real_connect(
+    $dbHost,
+    $dbUser,
+    $dbPassword,
+    $dbName,
+    $dbPort,
     null,
-    $connection_flags
+    $connectionFlags
 );
 
-
-// Check connection result.
 if (!$connected) {
 
-    // Keep technical details in Render server logs.
     error_log(
-        "Database connection failed: " . $db->connect_error
+        "Ravi3 database connection failed: " . $db->connect_error
     );
 
-    http_response_code(500);
-
-    exit(
-        "Unable to connect to the database. " .
-        "Please contact administrator."
-    );
+    die("Unable to connect to the database. Please contact the administrator.");
 }
 
 
 // -------------------------------------------------------
-// 5. SET CHARACTER SET
+// 7. SET CHARACTER ENCODING
 // -------------------------------------------------------
 
 if (!$db->set_charset("utf8mb4")) {
 
-    error_log("Unable to set database character set.");
+    error_log("Ravi3: Could not set database character encoding.");
 
-    http_response_code(500);
-
-    exit("Database character set error.");
+    die("Database character encoding error.");
 }
 
 
 // -------------------------------------------------------
-// 6. SET DATABASE TIME ZONE
+// 8. SET INDIA TIMEZONE
 // -------------------------------------------------------
 
-// All application pages use Indian Standard Time.
-if (!$db->query("SET time_zone = '+05:30'")) {
-
-    error_log("Unable to set database time zone.");
-
-    http_response_code(500);
-
-    exit("Database time zone setting failed.");
-}
+$db->query("SET time_zone = '+05:30'");
 
 
 // -------------------------------------------------------
-// 7. DATABASE CONNECTION ALIAS
+// 9. CONNECTION ALIAS
 // -------------------------------------------------------
 
-/*
- IMPORTANT:
-
- The database connection was created using $db.
-
- However, patient_access.php, login.php and other
- application pages use the variable $conn.
-
- This line makes BOTH variable names refer to
- the same database connection.
-
- Do not create another database connection.
-*/
+// Both $db and $conn refer to the same MySQLi connection.
+// This helps compatibility with PHP files using either name.
 
 $conn = $db;
 
 
 // -------------------------------------------------------
-// 8. DATABASE CONNECTION COMPLETED
+// END OF config.php
 // -------------------------------------------------------
-
-/*
- Database connection is now available as:
-
- $db
- $conn
-
- Both variables refer to the same MySQLi connection.
-
- Other PHP programs can now use either variable.
-*/
-
 ?>
