@@ -222,13 +222,12 @@ $assignmentSql = "
         patient_id,
         device_id,
         enabled,
-        valid_from,
-        valid_until
+        start_date_time AS valid_from,
+        end_date_time AS valid_until
     FROM patient_devices
     WHERE device_id = ?
       AND enabled = 1
 ";
-
 $assignmentStmt = $db->prepare($assignmentSql);
 
 if (!$assignmentStmt) {
