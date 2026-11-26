@@ -8,17 +8,15 @@ PURPOSE:
 1. Allow the owner to view registered patients.
 2. Display their assigned ESP32 devices.
 3. Allow the owner to select a patient.
-4. Display the selected patient's latest readings.
-5. Display the selected patient's dashboard alerts.
+4. Display recent monitoring readings and alerts.
+5. Provide a View Full Report link for every patient.
 
-IMPORTANT:
-This is a read-only owner dashboard.
-It does not change patient accounts, device assignments,
-or historical readings.
+READ ONLY:
+No patient accounts, device assignments or historical
+readings are modified by this page.
 
-Database connection: config.php
 Database: patient_monitor
-Connection type: MySQLi
+Connection: config.php (MySQLi)
 =========================================================
 */
 
@@ -41,7 +39,7 @@ if (
 
 
 // -------------------------------------------------------
-// 2. HELPER FUNCTION FOR SAFE HTML OUTPUT
+// 2. SAFE HTML OUTPUT
 // -------------------------------------------------------
 
 function owner_h($value)
@@ -58,14 +56,10 @@ function owner_h($value)
 // 3. GET DATABASE TABLE COLUMNS
 // -------------------------------------------------------
 
-// This helper checks which columns really exist.
-// It helps avoid assuming every optional column exists.
-
 function owner_get_columns($db, $table)
 {
     $columns = [];
 
-    // Table names are fixed inside this program.
     $allowedTables = [
         "patients",
         "patient_devices",
@@ -93,7 +87,7 @@ function owner_get_columns($db, $table)
 
 
 // -------------------------------------------------------
-// 4. FIND AVAILABLE PATIENT TABLE COLUMNS
+// 4. CHECK TABLE COLUMNS
 // -------------------------------------------------------
 
 $patientColumns = owner_get_columns($db, "patients");
@@ -102,96 +96,74 @@ $deviceColumns = owner_get_columns($db, "patient_devices");
 $monitorColumns = owner_get_columns($db, "monitoring_readings");
 $alertColumns = owner_get_columns($db, "alerts");
 
-
-// -------------------------------------------------------
-// 5. CHECK REQUIRED DATABASE COLUMNS
-// -------------------------------------------------------
-
 if (
     !in_array("patient_id", $patientColumns, true) ||
     !in_array("patient_id", $deviceColumns, true) ||
     !in_array("device_id", $deviceColumns, true)
 ) {
-
     die(
-        "Database structure error: patients.patient_id, " .
-        "patient_devices.patient_id or patient_devices.device_id " .
-        "is missing. Please check the database structure."
+        "Database structure error: required patient_id or device_id column is missing."
     );
-
 }
 
 
 // -------------------------------------------------------
-// 6. LOAD REGISTERED PATIENTS
+// 5. LOAD REGISTERED PATIENTS
 // -------------------------------------------------------
 
 $patients = [];
 
-$patientSql = "
+$patientResult = $db->query("
     SELECT *
     FROM patients
     ORDER BY patient_id
-";
-
-$patientResult = $db->query($patientSql);
+");
 
 if (!$patientResult) {
-
     error_log("Owner patient list error: " . $db->error);
-
     die("Unable to load patient records.");
-
 }
 
 while ($patient = $patientResult->fetch_assoc()) {
-
     $patients[] = $patient;
-
 }
 
 $patientResult->free();
 
 
 // -------------------------------------------------------
-// 7. LOAD DEVICE ASSIGNMENTS
+// 6. LOAD DEVICE ASSIGNMENTS
 // -------------------------------------------------------
 
 $deviceAssignments = [];
 
-$deviceSql = "
+$deviceResult = $db->query("
     SELECT *
     FROM patient_devices
     ORDER BY patient_id, device_id
-";
-
-$deviceResult = $db->query($deviceSql);
+");
 
 if (!$deviceResult) {
-
     error_log("Owner device list error: " . $db->error);
-
     die("Unable to load device assignments.");
-
 }
 
 while ($device = $deviceResult->fetch_assoc()) {
 
-    $patientId = (string)$device["patient_id"];
+    $patientIdKey = (string)$device["patient_id"];
 
-    if (!isset($deviceAssignments[$patientId])) {
-        $deviceAssignments[$patientId] = [];
+    if (!isset($deviceAssignments[$patientIdKey])) {
+        $deviceAssignments[$patientIdKey] = [];
     }
 
-    $deviceAssignments[$patientId][] = $device;
-
+    $deviceAssignments[$patientIdKey][] = $device;
 }
 
 $deviceResult->free();
 
 
 // -------------------------------------------------------
-// 8. GET SELECTED PATIENT
+// 7. GET SELECTED PATIENT
 // -------------------------------------------------------
 
 $selectedPatientId = trim(
@@ -206,33 +178,23 @@ foreach ($patients as $patient) {
         $selectedPatientId !== "" &&
         (string)$patient["patient_id"] === $selectedPatientId
     ) {
-
         $selectedPatient = $patient;
         break;
-
     }
-
 }
 
 
 // -------------------------------------------------------
-// 9. GET PATIENT DISPLAY NAME
+// 8. GET PATIENT DISPLAY NAME
 // -------------------------------------------------------
 
 function owner_patient_name($patient)
 {
-    $possibleNames = [
-        "patient_name",
-        "name",
-        "full_name"
-    ];
-
-    foreach ($possibleNames as $column) {
+    foreach (["patient_name", "name", "full_name"] as $column) {
 
         if (!empty($patient[$column])) {
             return $patient[$column];
         }
-
     }
 
     return $patient["patient_id"] ?? "Unknown patient";
@@ -240,7 +202,7 @@ function owner_patient_name($patient)
 
 
 // -------------------------------------------------------
-// 10. GET SELECTED PATIENT DEVICE IDs
+// 9. GET SELECTED PATIENT DEVICE IDS
 // -------------------------------------------------------
 
 $selectedDevices = [];
@@ -250,51 +212,38 @@ if ($selectedPatient !== null) {
     $selectedId = (string)$selectedPatient["patient_id"];
 
     $selectedDevices = $deviceAssignments[$selectedId] ?? [];
-
 }
 
 
 // -------------------------------------------------------
-// 11. LOAD RECENT MONITORING READINGS
+// 10. LOAD RECENT MONITORING READINGS
 // -------------------------------------------------------
 
 $monitoringReadings = [];
-
 $monitoringError = "";
 
 if ($selectedPatient !== null) {
 
-    $requiredMonitorColumns = [
-        "patient_id",
-        "device_id",
-        "recorded_at"
-    ];
-
-    foreach ($requiredMonitorColumns as $column) {
+    foreach (["patient_id", "device_id", "recorded_at"] as $column) {
 
         if (!in_array($column, $monitorColumns, true)) {
 
             $monitoringError =
-                "The monitoring_readings table is missing column: " .
-                $column;
+                "monitoring_readings is missing column: " . $column;
 
             break;
-
         }
-
     }
 
     if ($monitoringError === "") {
 
-        $monitorSql = "
+        $monitorStmt = $db->prepare("
             SELECT *
             FROM monitoring_readings
             WHERE patient_id = ?
             ORDER BY recorded_at DESC
             LIMIT 50
-        ";
-
-        $monitorStmt = $db->prepare($monitorSql);
+        ");
 
         if ($monitorStmt) {
 
@@ -311,63 +260,47 @@ if ($selectedPatient !== null) {
                 }
 
             } else {
-
                 $monitoringError = "Unable to read monitoring records.";
-
             }
 
             $monitorStmt->close();
 
         } else {
-
             $monitoringError = "Unable to prepare monitoring query.";
-
         }
-
     }
-
 }
 
 
 // -------------------------------------------------------
-// 12. LOAD RECENT DASHBOARD ALERTS
+// 11. LOAD RECENT DASHBOARD ALERTS
 // -------------------------------------------------------
 
 $patientAlerts = [];
-
 $alertError = "";
 
 if ($selectedPatient !== null) {
 
-    $requiredAlertColumns = [
-        "patient_id",
-        "recorded_at"
-    ];
-
-    foreach ($requiredAlertColumns as $column) {
+    foreach (["patient_id", "recorded_at"] as $column) {
 
         if (!in_array($column, $alertColumns, true)) {
 
             $alertError =
-                "The alerts table is missing column: " . $column;
+                "alerts table is missing column: " . $column;
 
             break;
-
         }
-
     }
 
     if ($alertError === "") {
 
-        $alertSql = "
+        $alertStmt = $db->prepare("
             SELECT *
             FROM alerts
             WHERE patient_id = ?
             ORDER BY recorded_at DESC
             LIMIT 50
-        ";
-
-        $alertStmt = $db->prepare($alertSql);
+        ");
 
         if ($alertStmt) {
 
@@ -384,26 +317,20 @@ if ($selectedPatient !== null) {
                 }
 
             } else {
-
                 $alertError = "Unable to read alert records.";
-
             }
 
             $alertStmt->close();
 
         } else {
-
             $alertError = "Unable to prepare alert query.";
-
         }
-
     }
-
 }
 
 
 // -------------------------------------------------------
-// 13. DISPLAY COLUMN VALUE SAFELY
+// 12. DISPLAY DATABASE VALUE SAFELY
 // -------------------------------------------------------
 
 function owner_value($row, $column, $default = "-")
@@ -420,10 +347,11 @@ function owner_value($row, $column, $default = "-")
 
 
 // -------------------------------------------------------
-// 14. OWNER USERNAME
+// 13. OWNER USERNAME
 // -------------------------------------------------------
 
-$ownerUsername = $_SESSION["ravi3_owner_username"] ?? "Owner";
+$ownerUsername =
+    $_SESSION["ravi3_owner_username"] ?? "Owner";
 
 ?>
 
@@ -565,6 +493,20 @@ button:hover {
     font-weight: bold;
 }
 
+.report-link {
+    display: inline-block;
+    background: #1769aa;
+    color: white;
+    text-decoration: none;
+    padding: 7px 11px;
+    border-radius: 5px;
+    white-space: nowrap;
+}
+
+.report-link:hover {
+    background: #0d4f85;
+}
+
 .small {
     font-size: 13px;
     color: #666;
@@ -592,7 +534,6 @@ button:hover {
     th, td {
         padding: 7px;
     }
-
 }
 
 </style>
@@ -608,12 +549,14 @@ button:hover {
     <div class="header">
 
         <div>
+
             <h2>Ravi3 Owner Dashboard</h2>
 
             <div class="small" style="color:white;">
                 Logged in as:
                 <?= owner_h($ownerUsername) ?>
             </div>
+
         </div>
 
         <a href="owner_logout.php">
@@ -653,6 +596,7 @@ button:hover {
                             <th>Patient Name</th>
                             <th>Assigned Device ID</th>
                             <th>Device Status</th>
+                            <th>Full Report</th>
                         </tr>
 
                     </thead>
@@ -737,6 +681,17 @@ button:hover {
                                     <?php endforeach; ?>
 
                                 <?php endif; ?>
+
+                            </td>
+
+                            <td>
+
+                                <a
+                                    class="report-link"
+                                    href="owner_patient.php?patient_id=<?= urlencode($patientId) ?>"
+                                >
+                                    View Full Report
+                                </a>
 
                             </td>
 
@@ -844,6 +799,15 @@ button:hover {
                     <?php endforeach; ?>
 
                 <?php endif; ?>
+
+                <br>
+
+                <a
+                    class="report-link"
+                    href="owner_patient.php?patient_id=<?= urlencode($selectedPatientId) ?>"
+                >
+                    View Full Report
+                </a>
 
             </div>
 
