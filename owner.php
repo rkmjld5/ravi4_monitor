@@ -6,16 +6,18 @@ File: owner.php
 
 ADMINISTRATOR FUNCTIONS:
 1. Register, edit and delete patient records.
-2. Assign, enable, disable and delete devices.
-3. Create and edit patient login accounts.
-4. Enable, disable and delete patient login accounts.
-5. View monitoring readings and alerts.
+2. Assign one device to multiple patients.
+3. Enable, disable and delete individual patient/device
+   assignments without affecting other patients.
+4. Create, edit, enable, disable and delete patient logins.
+5. View patient monitoring readings and alerts.
 
 IMPORTANT:
-- Uses Ravi4 session variables and existing $db connection.
-- Uses MySQLi, not PDO.
-- Patient login accounts use web_users.patient_id and device_id.
+- Uses MySQLi and the existing $db connection.
+- Uses Ravi4 owner session variables.
+- Every device operation uses BOTH device_id and patient_id.
 - Deleting a login does not delete patient history.
+- Deleting an assignment does not delete patient history.
 =========================================================
 */
 
@@ -206,14 +208,11 @@ function r4_value($row, $column, $default = "-")
 }
 
 /*
-  NEW HELPER:
-  Check whether the patient/device assignment exists.
+  Check whether the exact patient/device assignment exists.
 
-  This check deliberately does NOT require the assignment
-  to be enabled or within its dates.
-
-  It is used only when editing a login without changing
-  its existing patient/device combination.
+  This does not require the assignment to be enabled or
+  within its dates. It is used when editing a login while
+  keeping its existing patient/device combination.
 */
 function r4_device_assignment_exists(
     $db,
@@ -232,12 +231,7 @@ function r4_device_assignment_exists(
         return false;
     }
 
-    $stmt->bind_param(
-        "ss",
-        $device_id,
-        $patient_id
-    );
-
+    $stmt->bind_param("ss", $device_id, $patient_id);
     $stmt->execute();
 
     $found = $stmt->get_result()->num_rows > 0;
@@ -247,12 +241,8 @@ function r4_device_assignment_exists(
 }
 
 /*
-  Check that the device is assigned to the patient,
-  enabled, and within the assignment dates.
-
-  This is required for:
-  - Creating a new patient login.
-  - Changing the patient or device of an existing login.
+  Check that the exact patient/device assignment exists,
+  is enabled and is within its assignment dates.
 */
 function r4_device_belongs_to_patient(
     $db,
@@ -280,12 +270,7 @@ function r4_device_belongs_to_patient(
         return false;
     }
 
-    $stmt->bind_param(
-        "ss",
-        $device_id,
-        $patient_id
-    );
-
+    $stmt->bind_param("ss", $device_id, $patient_id);
     $stmt->execute();
 
     $found = $stmt->get_result()->num_rows > 0;
@@ -566,6 +551,14 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
     /*===================================================
       ACTION 4: ASSIGN OR UPDATE DEVICE
+
+      IMPORTANT:
+      We check the combination of device_id AND patient_id.
+
+      If ESP32-01 is already assigned to P1001, assigning
+      ESP32-01 to P1004 creates another assignment row.
+
+      P1001's assignment is not overwritten.
     ===================================================*/
 
     if ($action === "assign_device") {
@@ -586,6 +579,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             r4_message("Device ID and Patient ID are required.");
         }
 
+        if (strlen($device_id) > 32) {
+            r4_message("Device ID must not exceed 32 characters.");
+        }
+
         if ($start_date === false || $end_date === false) {
             r4_message("Please enter valid device assignment dates.");
         }
@@ -597,6 +594,8 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         ) {
             r4_message("Device end date must be later than start date.");
         }
+
+        /* Confirm that the patient exists. */
 
         $check = $db->prepare(
             "SELECT patient_id
@@ -620,52 +619,67 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $check->close();
 
         /*
-          This retains the original one-device-to-one-patient
-          assignment arrangement in the supplied database code.
+          Check the exact pair.
+
+          Do not search by device_id alone.
         */
 
         $check = $db->prepare(
             "SELECT device_id
              FROM patient_devices
              WHERE device_id = ?
+               AND patient_id = ?
              LIMIT 1"
         );
 
         if (!$check) {
-            r4_message("Could not check existing device assignment.");
+            r4_message("Could not check existing patient/device assignment.");
         }
 
-        $check->bind_param("s", $device_id);
+        $check->bind_param("ss", $device_id, $patient_id);
         $check->execute();
 
-        $existing = $check->get_result()->num_rows > 0;
+        $pairExists = $check->get_result()->num_rows > 0;
         $check->close();
 
-        if ($existing) {
+        if ($pairExists) {
+
+            /*
+              Update only this patient's assignment.
+
+              The enabled status is deliberately not changed.
+            */
 
             $stmt = $db->prepare(
                 "UPDATE patient_devices
-                 SET patient_id = ?,
-                     description = ?,
+                 SET description = ?,
                      start_date_time = ?,
                      end_date_time = ?
-                 WHERE device_id = ?"
+                 WHERE device_id = ?
+                   AND patient_id = ?"
             );
 
             if (!$stmt) {
-                r4_message("Could not prepare device update.");
+                r4_message("Could not prepare device assignment update.");
             }
 
             $stmt->bind_param(
                 "sssss",
-                $patient_id,
                 $description,
                 $start_date,
                 $end_date,
-                $device_id
+                $device_id,
+                $patient_id
             );
 
         } else {
+
+            /*
+              This patient does not yet have this device.
+
+              Insert a separate assignment row.
+              The same device_id may belong to other patients.
+            */
 
             $stmt = $db->prepare(
                 "INSERT INTO patient_devices
@@ -675,7 +689,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             );
 
             if (!$stmt) {
-                r4_message("Could not prepare device assignment.");
+                r4_message("Could not prepare new device assignment.");
             }
 
             $stmt->bind_param(
@@ -695,20 +709,30 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         }
 
         $stmt->close();
-        r4_message("Device assignment saved successfully.");
+
+        r4_message(
+            "Device assignment saved for patient " .
+            $patient_id .
+            ". Other patients assigned to this device were not changed."
+        );
     }
 
     /*===================================================
-      ACTION 5: ENABLE OR DISABLE DEVICE
+      ACTION 5: ENABLE OR DISABLE ONE DEVICE ASSIGNMENT
+
+      IMPORTANT:
+      Only the selected patient/device pair is changed.
     ===================================================*/
 
     if ($action === "toggle_device") {
 
         $device_id = trim($_POST["device_id"] ?? "");
+        $patient_id = trim($_POST["patient_id"] ?? "");
         $new_status = (int)($_POST["new_status"] ?? -1);
 
         if (
             $device_id === "" ||
+            $patient_id === "" ||
             !in_array($new_status, [0, 1], true)
         ) {
             r4_message("Invalid device status request.");
@@ -717,49 +741,79 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $stmt = $db->prepare(
             "UPDATE patient_devices
              SET enabled = ?
-             WHERE device_id = ?"
+             WHERE device_id = ?
+               AND patient_id = ?"
         );
 
         if (!$stmt) {
             r4_message("Could not prepare device status update.");
         }
 
-        $stmt->bind_param("is", $new_status, $device_id);
+        $stmt->bind_param(
+            "iss",
+            $new_status,
+            $device_id,
+            $patient_id
+        );
 
         if (!$stmt->execute()) {
+            error_log("Ravi4 device status: " . $stmt->error);
             $stmt->close();
             r4_message("Could not update device status.");
         }
 
+        $changed = $stmt->affected_rows;
         $stmt->close();
-        r4_message("Device status updated.");
+
+        if ($changed < 0) {
+            r4_message("Device status update failed.");
+        }
+
+        r4_message(
+            "Device assignment status updated for " .
+            $patient_id .
+            " / " .
+            $device_id .
+            ". Other patients were not affected."
+        );
     }
 
     /*===================================================
-      ACTION 6: DELETE DEVICE ASSIGNMENT
+      ACTION 6: DELETE ONE DEVICE ASSIGNMENT
+
+      IMPORTANT:
+      Only the selected patient/device pair is deleted.
+      Other patients using the same device are not affected.
     ===================================================*/
 
     if ($action === "delete_device") {
 
         $device_id = trim($_POST["device_id"] ?? "");
+        $patient_id = trim($_POST["patient_id"] ?? "");
 
-        if ($device_id === "") {
-            r4_message("Device ID is missing.");
+        if ($device_id === "" || $patient_id === "") {
+            r4_message("Device ID or Patient ID is missing.");
         }
+
+        /*
+          Check whether this exact patient/device pair is
+          being used by a patient login.
+        */
 
         $check = $db->prepare(
             "SELECT id
              FROM web_users
              WHERE device_id = ?
+               AND patient_id = ?
                AND role = 'patient'
              LIMIT 1"
         );
 
         if (!$check) {
-            r4_message("Could not check linked patient logins.");
+            r4_message("Could not check linked patient login.");
         }
 
-        $check->bind_param("s", $device_id);
+        $check->bind_param("ss", $device_id, $patient_id);
         $check->execute();
 
         $hasLogin = $check->get_result()->num_rows > 0;
@@ -767,22 +821,24 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         if ($hasLogin) {
             r4_message(
-                "Device assignment was not deleted because a patient login still uses this device. Edit or delete that login first."
+                "Assignment was not deleted because a patient login uses this patient/device combination. Edit or delete that login first."
             );
         }
 
         $stmt = $db->prepare(
             "DELETE FROM patient_devices
-             WHERE device_id = ?"
+             WHERE device_id = ?
+               AND patient_id = ?"
         );
 
         if (!$stmt) {
-            r4_message("Could not prepare device deletion.");
+            r4_message("Could not prepare device assignment deletion.");
         }
 
-        $stmt->bind_param("s", $device_id);
+        $stmt->bind_param("ss", $device_id, $patient_id);
 
         if (!$stmt->execute()) {
+            error_log("Ravi4 device deletion: " . $stmt->error);
             $stmt->close();
             r4_message("Could not delete device assignment.");
         }
@@ -790,18 +846,16 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         $stmt->close();
 
         r4_message(
-            "Device assignment deleted. Historical readings have not been deleted."
+            "Device assignment for " .
+            $patient_id .
+            " / " .
+            $device_id .
+            " deleted. Other patients and historical readings have not been deleted."
         );
     }
 
     /*===================================================
       ACTION 7: CREATE OR EDIT PATIENT LOGIN
-
-      CORRECTED VALIDATION:
-      - Unchanged patient/device pair:
-        assignment only needs to exist.
-      - New or changed patient/device pair:
-        assignment must be enabled and within its dates.
     ===================================================*/
 
     if ($action === "save_patient_login") {
@@ -848,7 +902,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             );
         }
 
-        /* First, confirm that the selected patient exists. */
+        /* Confirm that the selected patient exists. */
 
         $patientCheck = $db->prepare(
             "SELECT patient_id
@@ -874,10 +928,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         }
 
         /*
-          For an edit, load the existing patient/device pair.
-
-          We must know whether the administrator is keeping
-          the existing assignment or changing it.
+          For an edit, load the old patient/device pair.
         */
 
         $old_patient_id = "";
@@ -914,18 +965,10 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         }
 
         /*
-          IMPORTANT CORRECTION:
+          If the pair is unchanged, it only needs to exist.
 
-          If the patient and device are unchanged, allow the
-          administrator to edit username, password or login
-          dates even if the device assignment is now disabled
-          or expired.
-
-          The assignment must still exist in patient_devices.
-
-          This does NOT enable the device or restore patient
-          access. Existing login/device validity checks in the
-          patient-facing pages must continue to apply.
+          If the pair is new or changed, it must be enabled
+          and within the assignment dates.
         */
 
         $sameAssignment = (
@@ -944,16 +987,11 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 )
             ) {
                 r4_message(
-                    "The existing patient/device assignment was not found. Please check the device assignment before saving."
+                    "The existing patient/device assignment was not found. Please check the device assignment."
                 );
             }
 
         } else {
-
-            /*
-              New login or changed patient/device pair:
-              require a currently enabled and date-valid assignment.
-            */
 
             if (
                 !r4_device_belongs_to_patient(
@@ -963,7 +1001,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 )
             ) {
                 r4_message(
-                    "The selected device is not currently enabled and assigned to the selected patient, or its assignment dates are not valid. Please check the device assignment."
+                    "The selected device is not currently enabled and assigned to the selected patient, or its assignment dates are not valid."
                 );
             }
         }
@@ -984,11 +1022,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
                 r4_message("Could not check username.");
             }
 
-            $check->bind_param(
-                "si",
-                $username,
-                $login_id
-            );
+            $check->bind_param("si", $username, $login_id);
 
         } else {
 
@@ -1015,7 +1049,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
         $check->close();
 
-        /* EDIT EXISTING PATIENT LOGIN */
+        /* EDIT EXISTING LOGIN */
 
         if ($login_id > 0) {
 
@@ -1097,7 +1131,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             r4_message("Patient login account updated successfully.");
         }
 
-        /* CREATE NEW PATIENT LOGIN */
+        /* CREATE NEW LOGIN */
 
         if ($password === "" || strlen($password) < 8) {
             r4_message(
@@ -1173,11 +1207,7 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
             r4_message("Could not prepare patient login status update.");
         }
 
-        $stmt->bind_param(
-            "ii",
-            $new_status,
-            $login_id
-        );
+        $stmt->bind_param("ii", $new_status, $login_id);
 
         if (!$stmt->execute()) {
             $stmt->close();
@@ -1324,7 +1354,10 @@ while ($row = $result->fetch_assoc()) {
 $result->free();
 
 /*-------------------------------------------------------
-  10. LOAD DEVICE ASSIGNMENTS
+  10. LOAD ALL DEVICE ASSIGNMENTS
+
+  The same device ID can appear more than once because
+  it may be assigned to different patients.
 -------------------------------------------------------*/
 
 $devices = [];
@@ -1337,7 +1370,7 @@ $result = $db->query(
      FROM patient_devices d
      LEFT JOIN patients p
        ON p.patient_id = d.patient_id
-     ORDER BY d.device_id"
+     ORDER BY d.device_id, d.patient_id"
 );
 
 if (!$result) {
@@ -1686,11 +1719,14 @@ th { background: #e7eef7; }
 
 @media(max-width: 750px) {
     body { padding: 8px; }
+
     table {
         display: block;
         overflow-x: auto;
     }
+
     .header { display: block; }
+
     .header a {
         display: inline-block;
         margin-top: 12px;
@@ -1708,6 +1744,7 @@ th { background: #e7eef7; }
         Logged in as:
         <strong><?= r4_h($ownerUsername) ?></strong>
     </div>
+
     <div>
         <a href="owner_logout.php">Owner Logout</a>
     </div>
@@ -1777,6 +1814,7 @@ th { background: #e7eef7; }
         <button type="submit" class="orange">
             Save Patient Changes
         </button>
+
         <a class="button grey" href="owner.php">Cancel</a>
     </form>
 
@@ -1861,6 +1899,7 @@ th { background: #e7eef7; }
     <td><?= r4_h($patient["blood_group"]) ?></td>
     <td><?= r4_h($patient["contact"]) ?></td>
     <td><?= r4_h($patient["email"]) ?></td>
+
     <td>
         <a class="button orange"
            href="owner.php?edit_patient=<?= urlencode($patient["patient_id"]) ?>">
@@ -1870,11 +1909,13 @@ th { background: #e7eef7; }
         <form method="post" action="owner.php"
               class="small-form"
               onsubmit="return confirm('Delete this patient record? This is allowed only if no linked records exist.');">
+
             <input type="hidden" name="csrf_token"
                    value="<?= r4_h($csrf_token) ?>">
             <input type="hidden" name="action" value="delete_patient">
             <input type="hidden" name="patient_id"
                    value="<?= r4_h($patient["patient_id"]) ?>">
+
             <button type="submit" class="red">Delete</button>
         </form>
     </td>
@@ -1901,18 +1942,29 @@ th { background: #e7eef7; }
 
 <h2>3. Assign / Update ESP32 Device</h2>
 
+<div class="info">
+    <strong>Shared device support:</strong>
+    The same ESP32 Device ID can be assigned to multiple patients.
+    For example, ESP32-01 can be assigned separately to P1001 and P1004.
+    Saving one patient's assignment will not replace another patient's assignment.
+</div>
+
 <form method="post" action="owner.php">
+
     <input type="hidden" name="csrf_token"
            value="<?= r4_h($csrf_token) ?>">
     <input type="hidden" name="action" value="assign_device">
 
     <label>Device ID *</label>
     <input type="text" name="device_id"
-           placeholder="Example: ESP32-01" required>
+           placeholder="Example: ESP32-01"
+           maxlength="32"
+           required>
 
     <label>Patient *</label>
     <select name="device_patient_id" required>
         <option value="">Select Patient</option>
+
         <?php foreach ($patients as $patient): ?>
             <option value="<?= r4_h($patient["patient_id"]) ?>">
                 <?= r4_h(
@@ -1933,8 +1985,8 @@ th { background: #e7eef7; }
 
     <p class="note">
         Leave dates blank if no date restriction is required.
-        Updating an existing device assignment preserves its
-        current enabled / disabled setting.
+        If this exact patient/device pair already exists, its description
+        and dates will be updated. Its enabled/disabled status will be retained.
     </p>
 
     <button type="submit">Save Device Assignment</button>
@@ -1949,6 +2001,12 @@ th { background: #e7eef7; }
 <div class="section">
 
 <h2>4. Device Assignments - Enable / Disable / Delete</h2>
+
+<p class="note">
+    Each row represents one patient/device assignment.
+    The same Device ID may appear in several rows for different patients.
+    The actions below affect only the patient shown in that row.
+</p>
 
 <?php if (count($devices) === 0): ?>
 
@@ -1971,7 +2029,7 @@ th { background: #e7eef7; }
 
 <?php foreach ($devices as $device): ?>
 <tr>
-    <td><?= r4_h($device["device_id"]) ?></td>
+    <td><strong><?= r4_h($device["device_id"]) ?></strong></td>
     <td><?= r4_h($device["patient_id"]) ?></td>
     <td><?= r4_h($device["full_name"]) ?></td>
     <td><?= r4_h($device["description"]) ?></td>
@@ -1989,11 +2047,16 @@ th { background: #e7eef7; }
 
     <td>
         <form method="post" action="owner.php" class="small-form">
+
             <input type="hidden" name="csrf_token"
                    value="<?= r4_h($csrf_token) ?>">
             <input type="hidden" name="action" value="toggle_device">
+
             <input type="hidden" name="device_id"
                    value="<?= r4_h($device["device_id"]) ?>">
+
+            <input type="hidden" name="patient_id"
+                   value="<?= r4_h($device["patient_id"]) ?>">
 
             <?php if ((int)$device["enabled"] === 1): ?>
                 <input type="hidden" name="new_status" value="0">
@@ -2002,16 +2065,23 @@ th { background: #e7eef7; }
                 <input type="hidden" name="new_status" value="1">
                 <button type="submit" class="green">Enable</button>
             <?php endif; ?>
+
         </form>
 
         <form method="post" action="owner.php"
               class="small-form"
-              onsubmit="return confirm('Delete this device assignment?');">
+              onsubmit="return confirm('Delete only this patient/device assignment? Other patients using this device will not be affected.');">
+
             <input type="hidden" name="csrf_token"
                    value="<?= r4_h($csrf_token) ?>">
             <input type="hidden" name="action" value="delete_device">
+
             <input type="hidden" name="device_id"
                    value="<?= r4_h($device["device_id"]) ?>">
+
+            <input type="hidden" name="patient_id"
+                   value="<?= r4_h($device["patient_id"]) ?>">
+
             <button type="submit" class="red">Delete</button>
         </form>
     </td>
@@ -2037,11 +2107,14 @@ th { background: #e7eef7; }
 
     <div class="edit-panel">
         <strong>Editing Patient Login Account</strong>
+
         <p>
             Login ID: <?= (int)$edit_login["id"] ?><br>
             Patient ID: <?= r4_h($edit_login["patient_id"]) ?><br>
-            Username: <?= r4_h($edit_login["username"]) ?>
+            Username: <?= r4_h($edit_login["username"]) ?><br>
+            Device ID: <?= r4_h($edit_login["device_id"]) ?>
         </p>
+
         <a class="button grey" href="owner.php">Cancel Editing</a>
     </div>
 
@@ -2056,6 +2129,7 @@ th { background: #e7eef7; }
            value="<?= $edit_login ? (int)$edit_login["id"] : 0 ?>">
 
     <label>Select Patient *</label>
+
     <select name="login_patient_id" required>
         <option value="">-- Select Patient --</option>
 
@@ -2066,9 +2140,11 @@ th { background: #e7eef7; }
                     ($edit_login["patient_id"] ?? "") ===
                     $patient["patient_id"]
                 ) ? "selected" : "" ?>>
+
                 <?= r4_h(
                     $patient["patient_id"] . " - " . $patient["full_name"]
                 ) ?>
+
             </option>
         <?php endforeach; ?>
     </select>
@@ -2078,27 +2154,42 @@ th { background: #e7eef7; }
     </p>
 
     <label>Patient Login Username *</label>
-    <input type="text" name="username"
+
+    <input type="text"
+           name="username"
            value="<?= r4_h($edit_login["username"] ?? "") ?>"
            required>
 
     <label>Assigned Device *</label>
+
     <select name="login_device_id" required>
-        <option value="">-- Select Device --</option>
+        <option value="">-- Select Patient's Device --</option>
 
         <?php foreach ($devices as $device): ?>
 
             <?php
             $deviceEnabled = (int)$device["enabled"] === 1;
+
             $selectedDevice = $edit_login["device_id"] ?? "";
-            $isCurrentDevice =
-                $selectedDevice === $device["device_id"];
+            $selectedPatientForLogin = $edit_login["patient_id"] ?? "";
+
+            /*
+              The current device is selected only when BOTH
+              patient_id and device_id match the existing login.
+            */
+
+            $isCurrentDevice = (
+                $selectedDevice === $device["device_id"] &&
+                $selectedPatientForLogin === $device["patient_id"]
+            );
 
             if ($deviceEnabled || $isCurrentDevice):
             ?>
+
                 <option
                     value="<?= r4_h($device["device_id"]) ?>"
                     <?= $isCurrentDevice ? "selected" : "" ?>>
+
                     <?= r4_h(
                         $device["device_id"] .
                         " - " .
@@ -2106,17 +2197,19 @@ th { background: #e7eef7; }
                         " - " .
                         $device["full_name"]
                     ) ?>
+
                 </option>
+
             <?php endif; ?>
 
         <?php endforeach; ?>
     </select>
 
     <p class="note">
-        Select the device assigned to the patient above.
-        The server checks that the patient and device match.
-        When editing an unchanged assignment, an expired or
-        disabled assignment can still be retained.
+        Device choices show the patient/device assignment.
+        If the same ESP32 is assigned to several patients, it will appear
+        separately for each patient. The server checks the exact pair
+        before creating or changing a login.
     </p>
 
     <label>
@@ -2143,6 +2236,7 @@ th { background: #e7eef7; }
     <?php endif; ?>
 
     <label>Login Valid From</label>
+
     <input type="datetime-local"
            name="valid_from"
            value="<?= r4_h(
@@ -2150,6 +2244,7 @@ th { background: #e7eef7; }
            ) ?>">
 
     <label>Login Valid Until / Expiry</label>
+
     <input type="datetime-local"
            name="valid_until"
            value="<?= r4_h(
@@ -2158,17 +2253,22 @@ th { background: #e7eef7; }
 
     <p class="note">
         Leave dates blank if no login date restriction is required.
-        Patient access must still pass the device and login checks
+        Patient access must still pass the login and device checks
         on the patient-facing pages.
     </p>
 
     <?php if ($edit_login): ?>
+
         <button type="submit" class="orange">
             Save Patient Login Changes
         </button>
+
         <a href="owner.php" class="button grey">Cancel</a>
+
     <?php else: ?>
+
         <button type="submit">Create Patient Login</button>
+
     <?php endif; ?>
 
 </form>
@@ -2240,6 +2340,7 @@ th { background: #e7eef7; }
         </a>
 
         <form method="post" action="owner.php" class="small-form">
+
             <input type="hidden" name="csrf_token"
                    value="<?= r4_h($csrf_token) ?>">
             <input type="hidden" name="action"
@@ -2254,17 +2355,20 @@ th { background: #e7eef7; }
                 <input type="hidden" name="new_status" value="1">
                 <button type="submit" class="green">Enable</button>
             <?php endif; ?>
+
         </form>
 
         <form method="post" action="owner.php"
               class="small-form"
               onsubmit="return confirm('Delete this patient login account? Patient records and monitoring history will remain.');">
+
             <input type="hidden" name="csrf_token"
                    value="<?= r4_h($csrf_token) ?>">
             <input type="hidden" name="action"
                    value="delete_patient_login">
             <input type="hidden" name="login_id"
                    value="<?= (int)$login["id"] ?>">
+
             <button type="submit" class="red">Delete</button>
         </form>
     </td>
@@ -2300,12 +2404,14 @@ th { background: #e7eef7; }
                     $selectedPatientId ===
                     (string)$patient["patient_id"]
                 ) ? "selected" : "" ?>>
+
                 <?= r4_h(
                     $patient["full_name"] .
                     " (" .
                     $patient["patient_id"] .
                     ")"
                 ) ?>
+
             </option>
         <?php endforeach; ?>
     </select>
@@ -2340,11 +2446,23 @@ th { background: #e7eef7; }
     <strong>Assigned Device IDs:</strong>
 
     <?php if (count($selectedDevices) === 0): ?>
+
         No device assigned.
+
     <?php else: ?>
+
         <?php foreach ($selectedDevices as $device): ?>
-            <?= r4_h($device["device_id"]) ?><br>
+            <?= r4_h($device["device_id"]) ?>
+
+            <?php if ((int)$device["enabled"] === 1): ?>
+                (Enabled)
+            <?php else: ?>
+                (Disabled)
+            <?php endif; ?>
+
+            <br>
         <?php endforeach; ?>
+
     <?php endif; ?>
 
     <br>
@@ -2471,8 +2589,8 @@ th { background: #e7eef7; }
     <strong>Ravi4 Administrator Dashboard</strong>
 
     <p class="note">
-        Patient administration, device assignments, login accounts,
-        monitoring readings and alerts.
+        Patient administration, shared device assignments,
+        login accounts, monitoring readings and alerts.
     </p>
 
     <a class="button grey" href="owner_logout.php">
