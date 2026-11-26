@@ -1,62 +1,68 @@
 <?php
 /*
-    PROJECT: ravi2_patient
-    FILE: logout.php
+=========================================================
+RAVI3 PATIENT MONITORING SYSTEM
+File: logout.php
 
-    PURPOSE:
-    Log out the currently logged-in patient.
+PURPOSE:
+1. End the Ravi3 patient login session.
+2. Remove patient session information.
+3. Clear the session cookie.
+4. Return the patient to login.php.
 
-    ACTIONS:
-    1. Clear all patient session information.
-    2. Remove the session cookie.
-    3. Destroy the PHP session.
-    4. Redirect to login.php.
-
-    No database changes are made.
+IMPORTANT:
+This file does not delete any patient records,
+device assignments, monitoring readings or ECG readings.
+=========================================================
 */
 
-// --------------------------------------------------
-// 1. LOAD CONFIGURATION AND START SESSION
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 1. LOAD RAVI3 CONFIGURATION
+// -------------------------------------------------------
 
 require_once __DIR__ . "/config.php";
 
-// --------------------------------------------------
-// 2. CLEAR ALL SESSION INFORMATION
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 2. REMOVE ALL SESSION VARIABLES
+// -------------------------------------------------------
 
 $_SESSION = [];
 
-// --------------------------------------------------
-// 3. REMOVE THE SESSION COOKIE
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 3. REMOVE SESSION COOKIE
+// -------------------------------------------------------
 
 if (ini_get("session.use_cookies")) {
 
-    $cookie_parameters = session_get_cookie_params();
+    $cookieParameters = session_get_cookie_params();
 
     setcookie(
         session_name(),
         "",
-        time() - 42000,
-        $cookie_parameters["path"],
-        $cookie_parameters["domain"],
-        $cookie_parameters["secure"],
-        $cookie_parameters["httponly"]
+        time() - 3600,
+        $cookieParameters["path"],
+        $cookieParameters["domain"],
+        $cookieParameters["secure"],
+        $cookieParameters["httponly"]
     );
 }
 
-// --------------------------------------------------
-// 4. DESTROY THE SESSION
-// --------------------------------------------------
+
+// -------------------------------------------------------
+// 4. DESTROY SESSION
+// -------------------------------------------------------
 
 session_destroy();
 
-// --------------------------------------------------
-// 5. RETURN TO PATIENT LOGIN PAGE
-// --------------------------------------------------
 
-header("Location: login.php?message=" . urlencode("You have been logged out successfully."));
+// -------------------------------------------------------
+// 5. RETURN TO RAVI3 LOGIN PAGE
+// -------------------------------------------------------
+
+header("Location: login.php");
 exit;
 
 ?>
