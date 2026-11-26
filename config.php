@@ -1,28 +1,25 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: config.php
 
 Purpose:
-1. Start the Ravi3 patient-monitoring session.
-2. Connect to the MySQL database using MySQLi.
-3. Read database settings from Render environment variables.
-4. Set the database timezone to India Standard Time.
+1. Start a separate Ravi4 session.
+2. Connect to the existing TiDB Cloud database.
+3. Require secure SSL/TLS database communication.
+4. Set database timezone to India Standard Time.
 
 IMPORTANT:
-This file belongs to Ravi3 only.
-Do not replace the config.php file in Ravi2.
+This file belongs to Ravi4 only.
+Do not modify Ravi2.
 =========================================================
 */
 
 
 // -------------------------------------------------------
-// 1. START RAVI3 SESSION
+// 1. START RAVI4 SESSION
 // -------------------------------------------------------
-
-// Use a separate session name so Ravi3 does not interfere
-// with the existing Ravi2 project.
 
 if (session_status() === PHP_SESSION_NONE) {
 
@@ -35,7 +32,7 @@ if (session_status() === PHP_SESSION_NONE) {
         )
     );
 
-    session_name("RAVI3SESSID");
+    session_name("RAVI4SESSID");
 
     session_set_cookie_params([
         'lifetime' => 0,
@@ -51,39 +48,34 @@ if (session_status() === PHP_SESSION_NONE) {
 
 
 // -------------------------------------------------------
-// 2. DATABASE SETTINGS
+// 2. READ DATABASE SETTINGS FROM RENDER
 // -------------------------------------------------------
 
-// These values are obtained from Render environment
-// variables. Do not put database passwords in this file.
-
-$dbHost = getenv("DB_HOST");
-$dbPort = getenv("DB_PORT");
-$dbName = getenv("DB_NAME");
-$dbUser = getenv("DB_USER");
+$dbHost     = getenv("DB_HOST");
+$dbPort     = getenv("DB_PORT");
+$dbName     = getenv("DB_NAME");
+$dbUser     = getenv("DB_USER");
 $dbPassword = getenv("DB_PASSWORD");
 
-// TiDB/Render SSL settings.
-$dbSsl = getenv("DB_SSL");
-$dbSslCa = getenv("DB_SSL_CA");
+$dbSsl      = getenv("DB_SSL");
+$dbSslCa    = getenv("DB_SSL_CA");
 
 
 // -------------------------------------------------------
-// 3. CHECK REQUIRED DATABASE SETTINGS
+// 3. CHECK REQUIRED SETTINGS
 // -------------------------------------------------------
 
 if (
     !$dbHost ||
     !$dbName ||
     !$dbUser ||
-    $dbPassword === false
+    $dbPassword === false ||
+    $dbPassword === ''
 ) {
-    error_log("Ravi3: Database environment settings are incomplete.");
+    error_log("Ravi4: Database environment settings are incomplete.");
     die("Database configuration error. Please contact the administrator.");
 }
 
-
-// Use port 4000 if DB_PORT is not configured.
 if (!$dbPort) {
     $dbPort = 4000;
 }
@@ -92,7 +84,20 @@ $dbPort = (int)$dbPort;
 
 
 // -------------------------------------------------------
-// 4. CREATE MYSQLI CONNECTION
+// 4. SSL IS MANDATORY
+// -------------------------------------------------------
+
+if (
+    $dbSsl === false ||
+    strtolower(trim($dbSsl)) !== "true"
+) {
+    error_log("Ravi4: DB_SSL must be set to true.");
+    die("Secure database connection is not configured.");
+}
+
+
+// -------------------------------------------------------
+// 5. INITIALIZE MYSQLI
 // -------------------------------------------------------
 
 mysqli_report(MYSQLI_REPORT_OFF);
@@ -100,45 +105,46 @@ mysqli_report(MYSQLI_REPORT_OFF);
 $db = mysqli_init();
 
 if (!$db) {
-    error_log("Ravi3: Could not initialize MySQLi.");
+    error_log("Ravi4: Could not initialize MySQLi.");
     die("Database connection could not be initialized.");
 }
 
 
 // -------------------------------------------------------
-// 5. ENABLE SSL WHEN CONFIGURED
+// 6. CONFIGURE SSL CERTIFICATE
 // -------------------------------------------------------
 
-$useSsl = (
-    $dbSsl !== false &&
-    strtolower(trim($dbSsl)) === "true"
-);
+// TiDB Cloud requires a secure connection.
+// DB_SSL_CA should contain the path to the CA certificate
+// supplied by TiDB Cloud, if required by its connection setup.
 
-if ($useSsl) {
+if ($dbSslCa !== false && trim($dbSslCa) !== '') {
 
-    // If Render provides a CA certificate path, use it.
-    if ($dbSslCa && file_exists($dbSslCa)) {
+    $dbSslCa = trim($dbSslCa);
 
-        $db->ssl_set(
-            null,
-            null,
-            $dbSslCa,
-            null,
-            null
-        );
+    if (!file_exists($dbSslCa)) {
+        error_log("Ravi4: SSL CA certificate file was not found.");
+        die("Database SSL certificate configuration error.");
+    }
+
+    if (!$db->ssl_set(
+        null,
+        null,
+        $dbSslCa,
+        null,
+        null
+    )) {
+        error_log("Ravi4: Could not configure SSL certificate.");
+        die("Database SSL configuration error.");
     }
 }
 
 
 // -------------------------------------------------------
-// 6. CONNECT TO DATABASE
+// 7. CONNECT USING SSL
 // -------------------------------------------------------
 
-$connectionFlags = 0;
-
-if ($useSsl) {
-    $connectionFlags |= MYSQLI_CLIENT_SSL;
-}
+$connectionFlags = MYSQLI_CLIENT_SSL;
 
 $connected = @$db->real_connect(
     $dbHost,
@@ -153,43 +159,40 @@ $connected = @$db->real_connect(
 if (!$connected) {
 
     error_log(
-        "Ravi3 database connection failed: " . $db->connect_error
+        "Ravi4 database connection failed: " . $db->connect_error
     );
 
-    die("Unable to connect to the database. Please contact the administrator.");
+    die("Unable to connect securely to the database. Please contact the administrator.");
 }
 
 
 // -------------------------------------------------------
-// 7. SET CHARACTER ENCODING
+// 8. SET CHARACTER ENCODING
 // -------------------------------------------------------
 
 if (!$db->set_charset("utf8mb4")) {
 
-    error_log("Ravi3: Could not set database character encoding.");
+    error_log("Ravi4: Could not set database character encoding.");
 
     die("Database character encoding error.");
 }
 
 
 // -------------------------------------------------------
-// 8. SET INDIA TIMEZONE
+// 9. SET INDIA TIMEZONE
 // -------------------------------------------------------
 
 $db->query("SET time_zone = '+05:30'");
 
 
 // -------------------------------------------------------
-// 9. CONNECTION ALIAS
+// 10. CONNECTION ALIAS
 // -------------------------------------------------------
-
-// Both $db and $conn refer to the same MySQLi connection.
-// This helps compatibility with PHP files using either name.
 
 $conn = $db;
 
 
 // -------------------------------------------------------
-// END OF config.php
+// END OF RAVI4 config.php
 // -------------------------------------------------------
 ?>
