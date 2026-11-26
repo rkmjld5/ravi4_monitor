@@ -1,27 +1,25 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: patient_access.php
 
 PURPOSE:
 1. Check whether the patient has logged in.
-2. Check the patient's session information.
-3. Confirm that the assigned device is enabled.
-4. Check the device assignment start and expiry dates.
-5. Stop access if the account/device is disabled or expired.
+2. Check Ravi4 patient session information.
+3. Confirm that the patient has an enabled device assignment.
+4. Check device assignment start and expiry dates.
+5. Stop access if the assignment is disabled or expired.
 
 IMPORTANT:
-Include this file at the beginning of patient pages:
-index.php, history.php, ecg_history.php and alerts.php.
-
-This file uses the Ravi3 session name and variables.
+This file belongs to Ravi4 only.
+It does not modify patient records or device assignments.
 =========================================================
 */
 
 
 // -------------------------------------------------------
-// 1. LOAD DATABASE CONNECTION
+// 1. LOAD RAVI4 DATABASE CONNECTION AND SESSION
 // -------------------------------------------------------
 
 require_once __DIR__ . "/config.php";
@@ -31,10 +29,14 @@ require_once __DIR__ . "/config.php";
 // 2. CHECK PATIENT LOGIN
 // -------------------------------------------------------
 
+// These are the session names created by Ravi4 login.php.
+
 if (
-    empty($_SESSION["ravi3_patient_id"]) ||
-    empty($_SESSION["ravi3_patient_name"]) ||
-    empty($_SESSION["ravi3_device_id"])
+    empty($_SESSION["ravi4_patient_logged_in"]) ||
+    $_SESSION["ravi4_patient_logged_in"] !== true ||
+    empty($_SESSION["ravi4_patient_id"]) ||
+    empty($_SESSION["ravi4_patient_name"]) ||
+    empty($_SESSION["ravi4_device_id"])
 ) {
     header("Location: login.php");
     exit;
@@ -42,33 +44,34 @@ if (
 
 
 // -------------------------------------------------------
-// 3. GET PATIENT DETAILS FROM SESSION
+// 3. GET PATIENT DETAILS FROM RAVI4 SESSION
 // -------------------------------------------------------
 
-$patient_id = trim($_SESSION["ravi3_patient_id"]);
-$patient_name = trim($_SESSION["ravi3_patient_name"]);
-$device_id = trim($_SESSION["ravi3_device_id"]);
+$patient_id = trim($_SESSION["ravi4_patient_id"]);
+
+$patient_name = trim($_SESSION["ravi4_patient_name"]);
+
+$device_id = trim($_SESSION["ravi4_device_id"]);
 
 
 // -------------------------------------------------------
 // 4. CHECK DEVICE ASSIGNMENT
 // -------------------------------------------------------
 
-// The patient must have an enabled assignment for this
-// exact device ID.
+// The actual assignment date columns used by the existing
+// Ravi2 application are:
+// start_date_time
+// end_date_time
 //
-// Expected patient_devices columns:
-// patient_id, device_id, enabled, valid_from, valid_until.
-//
-// The assignment is not changed by this program.
+// We only read the assignment. Nothing is modified.
 
 $sql = "
     SELECT
         patient_id,
         device_id,
         enabled,
-        valid_from,
-        valid_until
+        start_date_time,
+        end_date_time
     FROM patient_devices
     WHERE patient_id = ?
       AND device_id = ?
@@ -78,15 +81,24 @@ $sql = "
 $stmt = $db->prepare($sql);
 
 if (!$stmt) {
-    error_log("Ravi3 patient access query preparation failed: " . $db->error);
+
+    error_log(
+        "Ravi4 patient access prepare error: " . $db->error
+    );
+
     die("Unable to verify patient access. Please try again later.");
 }
 
 $stmt->bind_param("ss", $patient_id, $device_id);
 
 if (!$stmt->execute()) {
-    error_log("Ravi3 patient access query execution failed: " . $stmt->error);
+
+    error_log(
+        "Ravi4 patient access execution error: " . $stmt->error
+    );
+
     $stmt->close();
+
     die("Unable to verify patient access. Please try again later.");
 }
 
@@ -98,85 +110,92 @@ $stmt->close();
 
 
 // -------------------------------------------------------
-// 5. STOP ACCESS IF NO ASSIGNMENT EXISTS
+// 5. FUNCTION TO STOP PATIENT ACCESS
+// -------------------------------------------------------
+
+function ravi4_stop_patient_access($reason)
+{
+    error_log("Ravi4 patient access stopped: " . $reason);
+
+    // Clear the current Ravi4 login session.
+    $_SESSION = [];
+
+    session_destroy();
+
+    header("Location: login.php?error=" . urlencode($reason));
+
+    exit;
+}
+
+
+// -------------------------------------------------------
+// 6. CHECK WHETHER ASSIGNMENT EXISTS
 // -------------------------------------------------------
 
 if (!$assignment) {
 
-    session_unset();
-    session_destroy();
-
-    header("Location: login.php?error=assignment");
-    exit;
+    ravi4_stop_patient_access("assignment");
 }
 
 
 // -------------------------------------------------------
-// 6. CHECK WHETHER DEVICE IS ENABLED
+// 7. CHECK WHETHER DEVICE IS ENABLED
 // -------------------------------------------------------
 
 if ((int)$assignment["enabled"] !== 1) {
 
-    session_unset();
-    session_destroy();
-
-    header("Location: login.php?error=disabled");
-    exit;
+    ravi4_stop_patient_access("disabled");
 }
 
 
 // -------------------------------------------------------
-// 7. CHECK START AND EXPIRY DATES
+// 8. CHECK DEVICE ASSIGNMENT START AND EXPIRY DATES
 // -------------------------------------------------------
 
 date_default_timezone_set("Asia/Kolkata");
 
-$now = new DateTime("now", new DateTimeZone("Asia/Kolkata"));
+$indiaTimezone = new DateTimeZone("Asia/Kolkata");
+
+$now = new DateTime("now", $indiaTimezone);
 
 
-// Check the assignment start date.
-if (!empty($assignment["valid_from"])) {
+// Check assignment start date.
+
+if (!empty($assignment["start_date_time"])) {
 
     $validFrom = new DateTime(
-        $assignment["valid_from"],
-        new DateTimeZone("Asia/Kolkata")
+        $assignment["start_date_time"],
+        $indiaTimezone
     );
 
     if ($now < $validFrom) {
 
-        session_unset();
-        session_destroy();
-
-        header("Location: login.php?error=notstarted");
-        exit;
+        ravi4_stop_patient_access("notstarted");
     }
 }
 
 
-// Check the assignment expiry date.
-if (!empty($assignment["valid_until"])) {
+// Check assignment expiry date.
+
+if (!empty($assignment["end_date_time"])) {
 
     $validUntil = new DateTime(
-        $assignment["valid_until"],
-        new DateTimeZone("Asia/Kolkata")
+        $assignment["end_date_time"],
+        $indiaTimezone
     );
 
     if ($now > $validUntil) {
 
-        session_unset();
-        session_destroy();
-
-        header("Location: login.php?error=expired");
-        exit;
+        ravi4_stop_patient_access("expired");
     }
 }
 
 
 // -------------------------------------------------------
-// 8. ACCESS APPROVED
+// 9. PATIENT ACCESS APPROVED
 // -------------------------------------------------------
 
-// The following variables are available to the
+// The following variables are now available to the
 // patient dashboard and report pages:
 //
 // $patient_id
@@ -187,6 +206,6 @@ if (!empty($assignment["valid_until"])) {
 
 
 // -------------------------------------------------------
-// END OF patient_access.php
+// END OF RAVI4 patient_access.php
 // -------------------------------------------------------
 ?>
