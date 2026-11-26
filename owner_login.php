@@ -1,181 +1,183 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
-File: owner_login.php
+PROJECT: RAVI4 PATIENT MONITORING SYSTEM
+FILE: owner_login.php
 
 PURPOSE:
-1. Allow the owner/admin to log in.
-2. Use the same session started by config.php.
-3. Verify the password securely.
-4. Redirect the owner to owner.php.
+1. Owner/administrator login.
+2. Use existing web_users table.
+3. Verify password using password_hash.
+4. Allow only role = admin.
+5. Check account enabled status.
+6. Create Ravi4-specific owner session.
 
-No Firebase or mobile notification code.
+IMPORTANT:
+- Uses existing owner credentials.
+- Does not change database records.
+- Does not modify Ravi2.
 =========================================================
 */
 
+
+// -------------------------------------------------------
+// 1. CONNECT TO DATABASE AND START SESSION
+// -------------------------------------------------------
+
 require_once __DIR__ . "/config.php";
+
+if (!isset($conn) || !($conn instanceof mysqli)) {
+    die("Database connection is not available. Please check config.php.");
+}
 
 date_default_timezone_set("Asia/Kolkata");
 
-$error = "";
 
-// If the owner is already logged in, open owner page.
-if (
-    !empty($_SESSION["ravi3_owner_logged_in"]) &&
-    $_SESSION["ravi3_owner_logged_in"] === true
-) {
+// -------------------------------------------------------
+// 2. CHECK EXISTING OWNER SESSION
+// -------------------------------------------------------
+
+if (!empty($_SESSION["ravi4_owner_logged_in"])) {
+
     header("Location: owner.php");
     exit;
 }
 
 
 // -------------------------------------------------------
-// PROCESS LOGIN FORM
+// 3. CREATE CSRF SECURITY TOKEN
+// -------------------------------------------------------
+
+if (empty($_SESSION["ravi4_admin_login_csrf"])) {
+
+    $_SESSION["ravi4_admin_login_csrf"] =
+        bin2hex(random_bytes(32));
+}
+
+
+$message = "";
+$username = "";
+
+
+// -------------------------------------------------------
+// 4. PROCESS OWNER LOGIN FORM
 // -------------------------------------------------------
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    $username = trim($_POST["username"] ?? "");
-    $password = $_POST["password"] ?? "";
+    $csrf = $_POST["csrf_token"] ?? "";
 
-    if ($username === "" || $password === "") {
+    if (
+        empty($_SESSION["ravi4_admin_login_csrf"]) ||
+        !hash_equals($_SESSION["ravi4_admin_login_csrf"], $csrf)
+    ) {
 
-        $error = "Please enter username and password.";
+        $message = "Security verification failed. Please reload the page.";
 
     } else {
 
-        /*
-         * IMPORTANT:
-         * This query assumes web_users contains:
-         * username
-         * password
-         *
-         * It also assumes the owner account can be
-         * identified by the username stored in the table.
-         *
-         * The role check must be adjusted if your database
-         * uses a different column or owner-account method.
-         */
+        $username = trim($_POST["username"] ?? "");
+        $password = $_POST["password"] ?? "";
 
-        $sql = "
-            SELECT *
-            FROM web_users
-            WHERE username = ?
-            LIMIT 1
-        ";
+        if ($username === "" || $password === "") {
 
-        $stmt = $db->prepare($sql);
-
-        if (!$stmt) {
-
-            error_log("Ravi3 owner login prepare error: " . $db->error);
-
-            $error = "Login is temporarily unavailable.";
+            $message = "Please enter username and password.";
 
         } else {
 
-            $stmt->bind_param("s", $username);
+            // ------------------------------------------------
+            // 5. FIND OWNER ACCOUNT IN web_users
+            // ------------------------------------------------
 
-            if (!$stmt->execute()) {
+            /*
+               Correct password column:
+               password_hash
 
-                error_log("Ravi3 owner login query error: " . $stmt->error);
+               This is the same database query used by
+               the working Ravi2 owner login.
+            */
 
-                $error = "Login is temporarily unavailable.";
+            $sql = "
+                SELECT
+                    id,
+                    username,
+                    password_hash,
+                    role,
+                    enabled
+                FROM web_users
+                WHERE username = ?
+                LIMIT 1
+            ";
+
+            $stmt = $conn->prepare($sql);
+
+            if (!$stmt) {
+
+                error_log("Ravi4 owner login prepare error: " . $conn->error);
+
+                $message = "Database error. Please try again.";
 
             } else {
 
-                $result = $stmt->get_result();
-                $user = $result->fetch_assoc();
+                $stmt->bind_param("s", $username);
+                $stmt->execute();
 
-                if (!$user) {
+                $stmt->bind_result(
+                    $db_id,
+                    $db_username,
+                    $db_password_hash,
+                    $db_role,
+                    $db_enabled
+                );
 
-                    $error = "Invalid username or password.";
+                $account_found = $stmt->fetch();
+
+                $stmt->close();
+
+
+                // ------------------------------------------------
+                // 6. VERIFY OWNER CREDENTIALS
+                // ------------------------------------------------
+
+                if (
+                    $account_found &&
+                    $db_role === "admin" &&
+                    (int)$db_enabled === 1 &&
+                    password_verify($password, $db_password_hash)
+                ) {
+
+                    // ------------------------------------------------
+                    // 7. OWNER LOGIN SUCCESSFUL
+                    // ------------------------------------------------
+
+                    session_regenerate_id(true);
+
+                    $_SESSION["ravi4_owner_logged_in"] = true;
+
+                    $_SESSION["ravi4_owner_id"] = (int)$db_id;
+
+                    $_SESSION["ravi4_owner_username"] = $db_username;
+
+                    $_SESSION["ravi4_owner_name"] = $db_username;
+
+                    $_SESSION["ravi4_owner_role"] = "admin";
+
+
+                    // Remove login CSRF token after successful login.
+                    unset($_SESSION["ravi4_admin_login_csrf"]);
+
+
+                    header("Location: owner.php");
+                    exit;
 
                 } else {
 
-                    // Check that the account has a password.
-                    $storedPassword = $user["password"] ?? "";
-
-                    // Check password_hash() format.
-                    $passwordOK = false;
-
-                    if ($storedPassword !== "") {
-
-                        $passwordOK = password_verify(
-                            $password,
-                            $storedPassword
-                        );
-
-                    }
-
-                    // Check whether the account is enabled.
-                    $enabled = true;
-
-                    if (array_key_exists("enabled", $user)) {
-                        $enabled = (int)$user["enabled"] === 1;
-                    }
-
-                    // Check owner/admin role.
-                    // Adjust these values if your database
-                    // uses another role naming convention.
-                    $role = strtolower(
-                        trim((string)(
-                            $user["role"] ??
-                            $user["user_type"] ??
-                            $user["account_type"] ??
-                            ""
-                        ))
-                    );
-
-                    $isOwner = in_array(
-                        $role,
-                        ["owner", "admin", "administrator"],
-                        true
-                    );
-
-                    if (!$enabled) {
-
-                        $error = "This account is disabled.";
-
-                    } elseif (!$passwordOK) {
-
-                        $error = "Invalid username or password.";
-
-                    } elseif (!$isOwner) {
-
-                        $error = "This account does not have owner access.";
-
-                    } else {
-
-                        // Create a fresh session ID after login.
-                        session_regenerate_id(true);
-
-                        $_SESSION["ravi3_owner_logged_in"] = true;
-
-                        $_SESSION["ravi3_owner_username"] =
-                            $user["username"];
-
-                        $_SESSION["ravi3_owner_user_id"] =
-                            $user["id"] ?? null;
-
-                        $_SESSION["ravi3_owner_role"] = $role;
-
-                        header("Location: owner.php");
-                        exit;
-
-                    }
-
+                    $message =
+                        "Incorrect username or password, or administrator access is disabled.";
                 }
-
             }
-
-            $stmt->close();
-
         }
-
     }
-
 }
 
 ?>
@@ -185,84 +187,100 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
 <head>
 
-<meta charset="UTF-8">
+    <meta charset="UTF-8">
 
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport"
+          content="width=device-width, initial-scale=1.0">
 
-<title>Ravi3 Owner Login</title>
+    <title>Ravi4 Owner Login</title>
 
-<style>
+    <style>
 
-body {
-    margin: 0;
-    padding: 20px;
-    font-family: Arial, sans-serif;
-    background: #f2f5f9;
-}
+        * {
+            box-sizing: border-box;
+        }
 
-.login-box {
-    max-width: 400px;
-    margin: 70px auto;
-    padding: 25px;
-    background: white;
-    border-radius: 10px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.10);
-}
+        body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #eef2f7;
+            min-height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            padding: 20px;
+        }
 
-h2 {
-    text-align: center;
-    color: #17365d;
-}
+        .login-box {
+            width: 100%;
+            max-width: 430px;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 4px 18px rgba(0,0,0,0.12);
+        }
 
-label {
-    display: block;
-    margin-top: 15px;
-    font-weight: bold;
-}
+        h1 {
+            text-align: center;
+            color: #123b64;
+            font-size: 25px;
+        }
 
-input {
-    width: 100%;
-    box-sizing: border-box;
-    padding: 12px;
-    margin-top: 6px;
-    border: 1px solid #ccc;
-    border-radius: 5px;
-    font-size: 16px;
-}
+        .subtitle {
+            text-align: center;
+            color: #64748b;
+            margin-bottom: 25px;
+            font-size: 14px;
+        }
 
-button {
-    width: 100%;
-    margin-top: 22px;
-    padding: 12px;
-    background: #1769aa;
-    color: white;
-    border: none;
-    border-radius: 5px;
-    font-size: 16px;
-    cursor: pointer;
-}
+        label {
+            display: block;
+            margin-bottom: 7px;
+            font-weight: bold;
+        }
 
-button:hover {
-    background: #0d4f85;
-}
+        input {
+            width: 100%;
+            padding: 12px;
+            margin-bottom: 18px;
+            border: 1px solid #cbd5e1;
+            border-radius: 6px;
+            font-size: 15px;
+        }
 
-.error {
-    margin-top: 15px;
-    padding: 10px;
-    background: #ffe5e5;
-    color: #a00000;
-    border-radius: 5px;
-    text-align: center;
-}
+        button {
+            width: 100%;
+            padding: 13px;
+            background: #2563eb;
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+        }
 
-.footer {
-    margin-top: 20px;
-    text-align: center;
-    color: #666;
-    font-size: 13px;
-}
+        button:hover {
+            background: #1d4ed8;
+        }
 
-</style>
+        .message {
+            padding: 12px;
+            margin-bottom: 18px;
+            background: #fee2e2;
+            color: #991b1b;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .footer {
+            text-align: center;
+            color: #64748b;
+            margin-top: 22px;
+            font-size: 12px;
+        }
+
+    </style>
 
 </head>
 
@@ -270,50 +288,70 @@ button:hover {
 
 <div class="login-box">
 
-    <h2>Ravi3 Owner Login</h2>
+    <h1>Ravi4 Patient Monitoring System</h1>
 
-    <p style="text-align:center;">
-        Patient Monitoring System
-    </p>
+    <div class="subtitle">
+        Owner / Administrator Login
+    </div>
 
-    <?php if ($error !== ""): ?>
+    <?php if ($message !== ""): ?>
 
-        <div class="error">
-            <?= htmlspecialchars($error, ENT_QUOTES, "UTF-8") ?>
+        <div class="message">
+            <?php
+            echo htmlspecialchars(
+                $message,
+                ENT_QUOTES,
+                "UTF-8"
+            );
+            ?>
         </div>
 
     <?php endif; ?>
 
-    <form method="POST" action="">
+    <form method="POST" action="owner_login.php" autocomplete="off">
 
-        <label for="username">Owner Username</label>
+        <input
+            type="hidden"
+            name="csrf_token"
+            value="<?php
+                echo htmlspecialchars(
+                    $_SESSION["ravi4_admin_login_csrf"],
+                    ENT_QUOTES,
+                    "UTF-8"
+                );
+            ?>"
+        >
+
+        <label>Administrator Username</label>
 
         <input
             type="text"
-            id="username"
             name="username"
+            value="<?php echo htmlspecialchars($username, ENT_QUOTES, "UTF-8"); ?>"
+            maxlength="50"
             required
             autocomplete="username"
         >
 
-        <label for="password">Password</label>
+        <label>Password</label>
 
         <input
             type="password"
-            id="password"
             name="password"
             required
             autocomplete="current-password"
         >
 
         <button type="submit">
-            Owner Login
+            Administrator Login
         </button>
 
     </form>
 
     <div class="footer">
-        Ravi3 Patient Monitoring System
+        Ravi4 Patient Monitoring System
+        <br><br>
+        Authorized Administrator Access Only
     </div>
 
 </div>
