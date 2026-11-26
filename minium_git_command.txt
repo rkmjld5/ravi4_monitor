@@ -1,0 +1,37 @@
+git init
+git clone https://github.com/rkmjld5/ravi3_monitor.git
+git pull origin main
+git add .
+git commit -m "Fix imports and embeddings"
+git push
+
+/////////////////
+
+git pull origin main
+git add  config.php Dockerfile .gitignore alerts.php api_latest.php api_save_readings.php ecg_history.php firebase_auth.php firebase-messaging-sw.js history.php index.php login.php logout.php owner.php patient_access.php patient_api.php patient_login.php patient_logout.php save_push_token.php send_alert_email.php send_push_notification.php test_database.php check_patient_session.php test_db_connection.php .gitignore
+git commit -m "Fix imports and embeddings"
+git push
+
+
+
+////////////for generating QR code 
+https://esp-switch5a-remote.onrender.com/qr.php?controller_id=ESP0001
+
+
+///////////to run from browser
+https://esp-switch5a-remote.onrender.com/c/ESP0001
+
+
+git pull origin main
+git add  config.php Dockerfile test_db.php ecg_history.php history.php index.php login.php logout.php patient_access.php alerts.php owner_login.php owner.php owner_logout.php api_save_readings.php api_latest.php
+git commit -m "Fix imports and embeddings"
+git push
+
+
+
+
+
+
+
+
+
