@@ -1,192 +1,151 @@
 <?php
 /*
 =========================================================
- PROJECT : ravi2_patient
- FILE    : alerts.php
+RAVI3 PATIENT MONITORING SYSTEM
+File: alerts.php
 
- PURPOSE :
- 1. Display the logged-in patient's alerts.
- 2. Display the latest 100 alerts.
- 3. Allow the patient to acknowledge an alert.
- 4. Save acknowledgement date and time.
- 5. Protect the page using patient_access.php.
+PURPOSE:
+1. Display patient dashboard alerts.
+2. Show abnormal parameter and measured value.
+3. Show alert date and time.
+4. Show pending/acknowledged status.
+5. Allow patient to acknowledge an alert.
 
- IMPORTANT :
- - Web dashboard alerts only.
- - No Firebase or mobile notifications.
- - No SMS or WhatsApp.
- - No database table changes.
- - A patient can acknowledge only their own alerts.
+IMPORTANT:
+- Alerts are not deleted.
+- No Firebase notifications.
+- No mobile push notifications.
+- No SMS or WhatsApp.
+- Only the logged-in patient's assigned device
+  alerts are displayed.
 =========================================================
 */
 
 
 // -------------------------------------------------------
-// 1. CHECK PATIENT LOGIN AND ACCESS
+// 1. VERIFY PATIENT ACCESS
 // -------------------------------------------------------
 
 require_once __DIR__ . "/patient_access.php";
 
 
 // -------------------------------------------------------
-// 2. GET PATIENT INFORMATION
+// 2. PREPARE MESSAGE VARIABLES
 // -------------------------------------------------------
 
-$patient_id   = $_SESSION["ravi2_patient_id"];
-$patient_name = $_SESSION["ravi2_patient_name"];
-$device_id    = $_SESSION["ravi2_device_id"];
-
-
-// -------------------------------------------------------
-// 3. CREATE SECURITY TOKEN
-// -------------------------------------------------------
-
-/*
- This token protects the acknowledgement form.
- It helps prevent unauthorized requests.
-*/
-
-if (empty($_SESSION["alerts_csrf_token"])) {
-
-    $_SESSION["alerts_csrf_token"] = bin2hex(random_bytes(32));
-}
-
-$csrf_token = $_SESSION["alerts_csrf_token"];
+$successMessage = "";
+$errorMessage = "";
 
 
 // -------------------------------------------------------
-// 4. HANDLE ACKNOWLEDGE BUTTON
+// 3. PROCESS ALERT ACKNOWLEDGEMENT
 // -------------------------------------------------------
 
 if ($_SERVER["REQUEST_METHOD"] === "POST") {
 
-    $message = "";
+    $alertId = filter_input(
+        INPUT_POST,
+        "alert_id",
+        FILTER_VALIDATE_INT
+    );
 
-    // Check the security token.
-    $submitted_token = $_POST["csrf_token"] ?? "";
+    $csrfToken = $_POST["csrf_token"] ?? "";
 
+    // Check the CSRF token.
     if (
-        !is_string($submitted_token) ||
-        !hash_equals($csrf_token, $submitted_token)
+        empty($_SESSION["ravi3_csrf_token"]) ||
+        !is_string($csrfToken) ||
+        !hash_equals($_SESSION["ravi3_csrf_token"], $csrfToken)
     ) {
 
-        $message = "Invalid request. Please refresh the page and try again.";
+        $errorMessage = "Invalid request. Please refresh the page.";
+
+    } elseif (!$alertId || $alertId < 1) {
+
+        $errorMessage = "Invalid alert selected.";
 
     } else {
 
-        // Read the alert ID.
-        $alert_id = filter_var(
-            $_POST["alert_id"] ?? null,
-            FILTER_VALIDATE_INT
-        );
+        // Update only an alert belonging to this patient
+        // and the device assigned to the current session.
+        //
+        // Acknowledged alerts are not deleted.
 
-        if (!$alert_id || $alert_id < 1) {
+        $updateSql = "
+            UPDATE alerts
+            SET acknowledged = 1,
+                acknowledged_at = NOW()
+            WHERE id = ?
+              AND patient_id = ?
+              AND device_id = ?
+              AND acknowledged = 0
+        ";
 
-            $message = "Invalid alert ID.";
+        $updateStmt = $db->prepare($updateSql);
+
+        if (!$updateStmt) {
+
+            error_log("Ravi3 alert update error: " . $db->error);
+
+            $errorMessage = "Unable to acknowledge the alert.";
 
         } else {
 
-            /*
-             Only update an alert belonging to this patient.
+            $updateStmt->bind_param(
+                "iss",
+                $alertId,
+                $patient_id,
+                $device_id
+            );
 
-             acknowledged = 0 means it has not yet
-             been acknowledged.
+            if ($updateStmt->execute()) {
 
-             NOW() uses the database session time zone
-             set in config.php to +05:30.
-            */
+                if ($updateStmt->affected_rows > 0) {
 
-            $update_sql = "
-                UPDATE alerts
-                SET
-                    acknowledged = 1,
-                    acknowledged_at = NOW()
-                WHERE
-                    id = ?
-                    AND patient_id = ?
-                    AND acknowledged = 0
-            ";
-
-            $update_stmt = $conn->prepare($update_sql);
-
-            if (!$update_stmt) {
-
-                error_log(
-                    "Alert acknowledgement prepare error: " .
-                    $conn->error
-                );
-
-                $message = "Unable to acknowledge this alert. Please try again.";
-
-            } else {
-
-                $update_stmt->bind_param(
-                    "is",
-                    $alert_id,
-                    $patient_id
-                );
-
-                if (!$update_stmt->execute()) {
-
-                    error_log(
-                        "Alert acknowledgement execution error: " .
-                        $update_stmt->error
-                    );
-
-                    $message = "Unable to acknowledge this alert. Please try again.";
-
-                } elseif ($update_stmt->affected_rows === 1) {
-
-                    $message = "Alert successfully acknowledged.";
+                    $successMessage = "Alert acknowledged successfully.";
 
                 } else {
 
-                    $message = "This alert was already acknowledged or could not be found.";
+                    $errorMessage =
+                        "Alert was not found or has already been acknowledged.";
 
                 }
 
-                $update_stmt->close();
+            } else {
+
+                error_log(
+                    "Ravi3 alert update execution error: " .
+                    $updateStmt->error
+                );
+
+                $errorMessage = "Unable to update the alert.";
+
             }
+
+            $updateStmt->close();
         }
     }
-
-    // Save message for display after redirect.
-    $_SESSION["alerts_message"] = $message;
-
-    // Redirect to prevent accidental repeated form submission.
-    header("Location: alerts.php");
-    exit;
 }
 
 
 // -------------------------------------------------------
-// 5. DISPLAY MESSAGE AFTER ACKNOWLEDGEMENT
+// 4. CREATE CSRF TOKEN
 // -------------------------------------------------------
 
-$alert_message = "";
+if (empty($_SESSION["ravi3_csrf_token"])) {
 
-if (isset($_SESSION["alerts_message"])) {
+    $_SESSION["ravi3_csrf_token"] = bin2hex(random_bytes(32));
 
-    $alert_message = $_SESSION["alerts_message"];
-
-    unset($_SESSION["alerts_message"]);
 }
 
 
 // -------------------------------------------------------
-// 6. INITIALIZE ALERT VARIABLES
+// 5. GET PATIENT ALERTS
 // -------------------------------------------------------
 
 $alerts = [];
 
-$alert_error = "";
-
-
-// -------------------------------------------------------
-// 7. READ LATEST 100 ALERTS
-// -------------------------------------------------------
-
-$sql = "
+$alertSql = "
     SELECT
         id,
         parameter_name,
@@ -198,103 +157,73 @@ $sql = "
         acknowledged_at
     FROM alerts
     WHERE patient_id = ?
+      AND device_id = ?
     ORDER BY recorded_at DESC, id DESC
-    LIMIT 100
+    LIMIT 200
 ";
 
-$stmt = $conn->prepare($sql);
+$alertStmt = $db->prepare($alertSql);
 
-if (!$stmt) {
+if (!$alertStmt) {
 
-    error_log("Alerts page SQL error: " . $conn->error);
+    error_log("Ravi3 alerts query error: " . $db->error);
 
-    $alert_error = "Unable to load alerts. Please try again later.";
+    die("Unable to load patient alerts.");
 
-} else {
+}
 
-    $stmt->bind_param("s", $patient_id);
+$alertStmt->bind_param(
+    "ss",
+    $patient_id,
+    $device_id
+);
 
-    if (!$stmt->execute()) {
+$alertStmt->execute();
 
-        error_log("Alerts page execution error: " . $stmt->error);
+$alertResult = $alertStmt->get_result();
 
-        $alert_error = "Unable to load alerts. Please try again later.";
+while ($row = $alertResult->fetch_assoc()) {
+
+    $alerts[] = $row;
+
+}
+
+$alertStmt->close();
+
+
+// -------------------------------------------------------
+// 6. COUNT PENDING AND ACKNOWLEDGED ALERTS
+// -------------------------------------------------------
+
+$pendingCount = 0;
+$acknowledgedCount = 0;
+
+foreach ($alerts as $alert) {
+
+    if ((int)$alert["acknowledged"] === 1) {
+
+        $acknowledgedCount++;
 
     } else {
 
-        $alert_id = 0;
-        $parameter_name = "";
-        $measured_value = "";
-        $alert_text = "";
-        $recorded_at = "";
-        $alert_device_id = "";
-        $acknowledged = 0;
-        $acknowledged_at = "";
+        $pendingCount++;
 
-        $stmt->bind_result(
-            $alert_id,
-            $parameter_name,
-            $measured_value,
-            $alert_text,
-            $recorded_at,
-            $alert_device_id,
-            $acknowledged,
-            $acknowledged_at
-        );
-
-        while ($stmt->fetch()) {
-
-            $alerts[] = [
-                "id" => $alert_id,
-                "parameter_name" => $parameter_name,
-                "measured_value" => $measured_value,
-                "alert_message" => $alert_text,
-                "recorded_at" => $recorded_at,
-                "device_id" => $alert_device_id,
-                "acknowledged" => $acknowledged,
-                "acknowledged_at" => $acknowledged_at
-            ];
-        }
     }
 
-    $stmt->close();
 }
 
 
 // -------------------------------------------------------
-// 8. SAFE DISPLAY FUNCTION
+// 7. SAFE DISPLAY FUNCTION
 // -------------------------------------------------------
 
-function alert_escape($value)
+function ravi3_alert_h($value)
 {
     return htmlspecialchars(
         (string)($value ?? ""),
         ENT_QUOTES,
         "UTF-8"
     );
-}
-
-
-// -------------------------------------------------------
-// 9. COUNT ALERTS
-// -------------------------------------------------------
-
-$total_alerts = count($alerts);
-
-$unacknowledged_count = 0;
-
-$acknowledged_count = 0;
-
-foreach ($alerts as $alert) {
-
-    if ((int)$alert["acknowledged"] === 1) {
-
-        $acknowledged_count++;
-
-    } else {
-
-        $unacknowledged_count++;
-    }
 }
 
 ?>
@@ -309,280 +238,275 @@ foreach ($alerts as $alert) {
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
 
-    <title>Patient Alerts</title>
+    <title>Ravi3 Patient Alerts</title>
 
     <style>
 
         body {
-            font-family: Arial, sans-serif;
-            background: #f4f6f9;
             margin: 0;
-            padding: 20px;
-            color: #333;
+            padding: 15px;
+            font-family: Arial, sans-serif;
+            background: #f1f5f9;
+            color: #263238;
         }
 
         .container {
-            max-width: 1200px;
+            max-width: 1100px;
             margin: auto;
         }
 
         .header {
-            background: #ffffff;
+            background: #174a75;
+            color: white;
             padding: 20px;
-            border-radius: 8px;
+            border-radius: 9px;
             margin-bottom: 20px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
         }
 
-        h2 {
+        .header h2 {
             margin-top: 0;
-            color: #1f3b5b;
         }
 
-        .patient-info {
-            line-height: 1.8;
+        .navigation a {
+            display: inline-block;
+            background: white;
+            color: #174a75;
+            padding: 9px 13px;
+            margin: 5px 4px 0 0;
+            text-decoration: none;
+            border-radius: 5px;
+            font-size: 14px;
+        }
+
+        .navigation a:hover {
+            background: #dceaf5;
         }
 
         .summary {
-            display: flex;
-            flex-wrap: wrap;
+            display: grid;
+            grid-template-columns: repeat(
+                auto-fit,
+                minmax(180px, 1fr)
+            );
             gap: 15px;
             margin-bottom: 20px;
         }
 
-        .summary-box {
+        .summary-card {
             background: white;
             padding: 18px;
             border-radius: 8px;
-            flex: 1;
-            min-width: 140px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 7px rgba(0,0,0,0.08);
+        }
+
+        .summary-card h3 {
+            margin: 0 0 10px;
+            color: #526575;
+            font-size: 15px;
         }
 
         .summary-number {
-            font-size: 28px;
+            font-size: 27px;
             font-weight: bold;
-            margin-top: 8px;
         }
 
-        .alert-table-box {
-            background: white;
-            padding: 15px;
-            border-radius: 8px;
-            box-shadow: 0 2px 6px rgba(0,0,0,0.08);
+        .pending-number {
+            color: #b00020;
+        }
+
+        .ack-number {
+            color: #18733b;
+        }
+
+        .message {
+            padding: 12px;
+            margin-bottom: 15px;
+            border-radius: 6px;
+        }
+
+        .success {
+            background: #e4f6e9;
+            color: #176b35;
+        }
+
+        .error {
+            background: #ffe5e5;
+            color: #a00000;
+        }
+
+        .table-wrapper {
             overflow-x: auto;
+            background: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 7px rgba(0,0,0,0.08);
         }
 
         table {
             width: 100%;
             border-collapse: collapse;
-            min-width: 1000px;
+            min-width: 850px;
+        }
+
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #e3e8ee;
+            font-size: 14px;
         }
 
         th {
-            background: #24476b;
-            color: white;
-            padding: 12px;
-            text-align: left;
+            background: #e8f0f7;
+            color: #174a75;
         }
 
-        td {
-            padding: 12px;
-            border-bottom: 1px solid #ddd;
-            vertical-align: top;
-        }
-
-        tr:hover {
-            background: #f7f9fc;
-        }
-
-        .status-new {
-            color: #b42318;
+        .pending {
+            color: #b00020;
             font-weight: bold;
         }
 
-        .status-acknowledged {
-            color: #16803c;
+        .acknowledged {
+            color: #18733b;
             font-weight: bold;
         }
 
-        .acknowledge-button {
-            background: #16803c;
+        .ack-button {
+            background: #1769aa;
             color: white;
             border: none;
-            padding: 9px 13px;
+            padding: 8px 12px;
             border-radius: 5px;
             cursor: pointer;
-            font-size: 13px;
-            font-weight: bold;
         }
 
-        .acknowledge-button:hover {
-            background: #10632e;
+        .ack-button:hover {
+            background: #104d80;
         }
 
-        .message {
-            background: #e8f5e9;
-            color: #166534;
-            padding: 14px;
-            border-radius: 6px;
-            margin-bottom: 18px;
-        }
-
-        .error {
-            background: #fff0f0;
-            color: #b42318;
-            padding: 15px;
-            border-radius: 6px;
-            margin-bottom: 15px;
-        }
-
-        .no-alerts {
-            padding: 25px;
-            text-align: center;
-            color: #16803c;
-            font-size: 17px;
-        }
-
-        .navigation {
-            margin-bottom: 20px;
-        }
-
-        .navigation a {
-            display: inline-block;
-            background: #24476b;
-            color: white;
-            text-decoration: none;
-            padding: 10px 15px;
-            border-radius: 5px;
-            margin: 4px 5px 4px 0;
-        }
-
-        .navigation a:hover {
-            background: #16324f;
+        .no-data {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            color: #667788;
         }
 
         .footer {
-            margin-top: 20px;
             text-align: center;
-            color: #777;
+            color: #778899;
             font-size: 13px;
-        }
-
-        @media (max-width: 600px) {
-
-            body {
-                padding: 10px;
-            }
-
-            .summary-box {
-                min-width: 120px;
-            }
+            margin: 25px 0;
         }
 
     </style>
 
 </head>
 
-
 <body>
 
 <div class="container">
 
 
-    <!-- PATIENT INFORMATION -->
+    <!-- -----------------------------------------------
+         PAGE HEADER
+    ------------------------------------------------ -->
 
     <div class="header">
 
-        <h2>Patient Alert History</h2>
+        <h2>Patient Alerts</h2>
 
-        <div class="patient-info">
+        <p>
+            Patient:
+            <strong>
+                <?php echo ravi3_alert_h($patient_name); ?>
+            </strong>
+        </p>
 
-            <strong>Patient Name:</strong>
-            <?php echo alert_escape($patient_name); ?>
+        <p>
+            Patient ID:
+            <?php echo ravi3_alert_h($patient_id); ?>
+        </p>
 
-            <br>
+        <p>
+            Device ID:
+            <?php echo ravi3_alert_h($device_id); ?>
+        </p>
 
-            <strong>Patient ID:</strong>
-            <?php echo alert_escape($patient_id); ?>
+        <div class="navigation">
 
-            <br>
+            <a href="index.php">Dashboard</a>
 
-            <strong>Device ID:</strong>
-            <?php echo alert_escape($device_id); ?>
+            <a href="history.php">Reading History</a>
 
-            <br>
+            <a href="ecg_history.php">ECG History</a>
 
-            <strong>Time Zone:</strong>
-            Asia/Kolkata
+            <a href="alerts.php">Alerts</a>
+
+            <a href="logout.php">Logout</a>
 
         </div>
 
     </div>
 
 
-    <!-- NAVIGATION -->
+    <!-- -----------------------------------------------
+         SUCCESS AND ERROR MESSAGES
+    ------------------------------------------------ -->
 
-    <div class="navigation">
+    <?php if ($successMessage !== ""): ?>
 
-        <a href="index.php">Dashboard</a>
+        <div class="message success">
 
-        <a href="history.php">Reading History</a>
+            <?php echo ravi3_alert_h($successMessage); ?>
 
-        <a href="ecg_history.php">ECG History</a>
-
-        <a href="logout.php">Logout</a>
-
-    </div>
-
-
-    <!-- ACKNOWLEDGEMENT MESSAGE -->
-
-    <?php if ($alert_message !== ""): ?>
-
-        <div class="message">
-            <?php echo alert_escape($alert_message); ?>
         </div>
 
     <?php endif; ?>
 
 
-    <!-- SUMMARY -->
+    <?php if ($errorMessage !== ""): ?>
+
+        <div class="message error">
+
+            <?php echo ravi3_alert_h($errorMessage); ?>
+
+        </div>
+
+    <?php endif; ?>
+
+
+    <!-- -----------------------------------------------
+         ALERT SUMMARY
+    ------------------------------------------------ -->
 
     <div class="summary">
 
-        <div class="summary-box">
+        <div class="summary-card">
 
-            Total Alerts
+            <h3>Total Alerts Displayed</h3>
 
             <div class="summary-number">
-                <?php echo $total_alerts; ?>
+                <?php echo count($alerts); ?>
             </div>
 
         </div>
 
 
-        <div class="summary-box">
+        <div class="summary-card">
 
-            Unacknowledged Alerts
+            <h3>Pending Alerts</h3>
 
-            <div class="summary-number" style="color:#b42318;">
-
-                <?php echo $unacknowledged_count; ?>
-
+            <div class="summary-number pending-number">
+                <?php echo $pendingCount; ?>
             </div>
 
         </div>
 
 
-        <div class="summary-box">
+        <div class="summary-card">
 
-            Acknowledged Alerts
+            <h3>Acknowledged Alerts</h3>
 
-            <div class="summary-number" style="color:#16803c;">
-
-                <?php echo $acknowledged_count; ?>
-
+            <div class="summary-number ack-number">
+                <?php echo $acknowledgedCount; ?>
             </div>
 
         </div>
@@ -590,30 +514,15 @@ foreach ($alerts as $alert) {
     </div>
 
 
-    <!-- DATABASE ERROR -->
+    <!-- -----------------------------------------------
+         ALERT TABLE
+    ------------------------------------------------ -->
 
-    <?php if ($alert_error !== ""): ?>
+    <h3>Alert Details</h3>
 
-        <div class="error">
-            <?php echo alert_escape($alert_error); ?>
-        </div>
+    <?php if (count($alerts) > 0): ?>
 
-    <?php endif; ?>
-
-
-    <!-- ALERT TABLE -->
-
-    <div class="alert-table-box">
-
-        <h3>Latest Patient Alerts</h3>
-
-        <?php if ($alert_error === "" && $total_alerts === 0): ?>
-
-            <div class="no-alerts">
-                No alerts are available for this patient.
-            </div>
-
-        <?php elseif ($alert_error === ""): ?>
+        <div class="table-wrapper">
 
             <table>
 
@@ -622,17 +531,22 @@ foreach ($alerts as $alert) {
                     <tr>
 
                         <th>Alert ID</th>
+
                         <th>Date / Time</th>
+
                         <th>Parameter</th>
+
                         <th>Measured Value</th>
+
                         <th>Alert Message</th>
-                        <th>Device ID</th>
-                        <th>Status / Action</th>
+
+                        <th>Status</th>
+
+                        <th>Action</th>
 
                     </tr>
 
                 </thead>
-
 
                 <tbody>
 
@@ -641,26 +555,30 @@ foreach ($alerts as $alert) {
                         <tr>
 
                             <td>
-                                <?php echo alert_escape($alert["id"]); ?>
-                            </td>
-
-                            <td>
-                                <?php echo alert_escape($alert["recorded_at"]); ?>
-                            </td>
-
-                            <td>
-                                <strong>
-                                    <?php
-                                    echo alert_escape(
-                                        $alert["parameter_name"]
-                                    );
-                                    ?>
-                                </strong>
+                                <?php
+                                echo (int)$alert["id"];
+                                ?>
                             </td>
 
                             <td>
                                 <?php
-                                echo alert_escape(
+                                echo ravi3_alert_h(
+                                    $alert["recorded_at"]
+                                );
+                                ?>
+                            </td>
+
+                            <td>
+                                <?php
+                                echo ravi3_alert_h(
+                                    $alert["parameter_name"]
+                                );
+                                ?>
+                            </td>
+
+                            <td>
+                                <?php
+                                echo ravi3_alert_h(
                                     $alert["measured_value"]
                                 );
                                 ?>
@@ -668,40 +586,27 @@ foreach ($alerts as $alert) {
 
                             <td>
                                 <?php
-                                echo alert_escape(
+                                echo ravi3_alert_h(
                                     $alert["alert_message"]
                                 );
                                 ?>
                             </td>
 
                             <td>
-                                <?php
-                                echo alert_escape(
-                                    $alert["device_id"]
-                                );
-                                ?>
-                            </td>
 
-                            <td>
+                                <?php if ((int)$alert["acknowledged"] === 1): ?>
 
-                                <?php if (
-                                    (int)$alert["acknowledged"] === 1
-                                ): ?>
-
-                                    <span class="status-acknowledged">
+                                    <span class="acknowledged">
                                         Acknowledged
                                     </span>
 
-                                    <?php if (
-                                        !empty($alert["acknowledged_at"])
-                                    ): ?>
+                                    <?php if (!empty($alert["acknowledged_at"])): ?>
 
-                                        <br><br>
+                                        <br>
 
                                         <small>
-                                            Acknowledged at:<br>
                                             <?php
-                                            echo alert_escape(
+                                            echo ravi3_alert_h(
                                                 $alert["acknowledged_at"]
                                             );
                                             ?>
@@ -711,42 +616,53 @@ foreach ($alerts as $alert) {
 
                                 <?php else: ?>
 
-                                    <span class="status-new">
-                                        Not Acknowledged
+                                    <span class="pending">
+                                        Pending
                                     </span>
 
-                                    <br><br>
+                                <?php endif; ?>
 
-                                    <!-- ACKNOWLEDGE BUTTON -->
+                            </td>
 
-                                    <form method="POST"
-                                          action="alerts.php">
+                            <td>
 
-                                        <input
-                                            type="hidden"
-                                            name="csrf_token"
-                                            value="<?php
-                                            echo alert_escape($csrf_token);
-                                            ?>"
-                                        >
+                                <?php if ((int)$alert["acknowledged"] !== 1): ?>
+
+                                    <form
+                                        method="POST"
+                                        action="alerts.php"
+                                    >
 
                                         <input
                                             type="hidden"
                                             name="alert_id"
                                             value="<?php
-                                            echo alert_escape($alert["id"]);
+                                            echo (int)$alert["id"];
+                                            ?>"
+                                        >
+
+                                        <input
+                                            type="hidden"
+                                            name="csrf_token"
+                                            value="<?php
+                                            echo ravi3_alert_h(
+                                                $_SESSION["ravi3_csrf_token"]
+                                            );
                                             ?>"
                                         >
 
                                         <button
                                             type="submit"
-                                            class="acknowledge-button"
-                                            onclick="return confirm('Are you sure you want to acknowledge this alert?');"
+                                            class="ack-button"
                                         >
                                             Acknowledge
                                         </button>
 
                                     </form>
+
+                                <?php else: ?>
+
+                                    --
 
                                 <?php endif; ?>
 
@@ -760,26 +676,34 @@ foreach ($alerts as $alert) {
 
             </table>
 
-        <?php endif; ?>
+        </div>
 
-    </div>
+    <?php else: ?>
+
+        <div class="no-data">
+
+            No alerts are available for this patient and device.
+
+        </div>
+
+    <?php endif; ?>
 
 
-    <!-- FOOTER -->
+    <!-- -----------------------------------------------
+         FOOTER
+    ------------------------------------------------ -->
 
     <div class="footer">
 
-        Patient Monitoring System
+        Ravi3 Patient Monitoring System
 
         <br>
 
-        All displayed times use Indian Standard Time.
+        Acknowledging an alert does not delete it.
 
     </div>
-
 
 </div>
 
 </body>
-
 </html>
