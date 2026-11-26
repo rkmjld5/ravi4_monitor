@@ -1,34 +1,51 @@
+
 <?php
 /*
-    PROJECT: ravi2_patient
-    FILE: owner_logout.php
+=========================================================
+RAVI3 PATIENT MONITORING SYSTEM
+File: owner_logout.php
 
-    PURPOSE:
-    Secure logout for Owner / Administrator.
+PURPOSE:
+1. Log out the owner.
+2. Clear owner session information.
+3. Destroy the current session.
+4. Return to owner_login.php.
 
-    IMPORTANT:
-    1. Destroys the Owner session.
-    2. Does not delete or modify database records.
-    3. Does not log out the patient session.
-    4. Redirects to owner_login.php.
+=========================================================
 */
 
-// Load config.php and start the session.
 require_once __DIR__ . "/config.php";
 
-// Remove only Owner / Administrator session variables.
-unset($_SESSION["owner_logged_in"]);
-unset($_SESSION["owner_id"]);
-unset($_SESSION["owner_username"]);
-unset($_SESSION["owner_name"]);
-unset($_SESSION["owner_full_name"]);
-unset($_SESSION["owner_csrf"]);
-unset($_SESSION["admin_login_csrf"]);
+// Remove owner-specific session information.
+unset($_SESSION["ravi3_owner_logged_in"]);
+unset($_SESSION["ravi3_owner_username"]);
+unset($_SESSION["ravi3_owner_user_id"]);
+unset($_SESSION["ravi3_owner_role"]);
 
-// Regenerate session ID.
-session_regenerate_id(true);
+// Clear all remaining session variables.
+$_SESSION = [];
 
-// Redirect to Owner login page.
+// Expire the session cookie.
+if (ini_get("session.use_cookies")) {
+
+    $cookieParams = session_get_cookie_params();
+
+    setcookie(
+        session_name(),
+        "",
+        time() - 42000,
+        $cookieParams["path"],
+        $cookieParams["domain"],
+        $cookieParams["secure"],
+        $cookieParams["httponly"]
+    );
+}
+
+// Destroy the session.
+session_destroy();
+
+// Return to owner login page.
 header("Location: owner_login.php");
 exit;
+
 ?>
