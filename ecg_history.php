@@ -1,47 +1,74 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: ecg_history.php
 
 PURPOSE:
 1. Display historical ECG recordings.
-2. Show recording date and time.
-3. Show sample rate and sample count.
+2. Show patient ID and device ID for every recording.
+3. Show recording date, sample rate and sample count.
 4. Display ECG waveform as a continuous line graph.
 5. Download ECG sample data as CSV.
 6. Download ECG graph as PNG.
 7. Print / save ECG graph as PDF.
-8. Restrict access to the logged-in patient's device.
+
+SECURITY:
+- Uses patient_access.php.
+- Gets patient ID and device ID from the authenticated session.
+- Retrieves records using BOTH patient_id and device_id.
+- Never retrieves records using device_id alone.
 
 DATABASE TABLE:
-    ecg_readings
-
-EXPECTED COLUMNS:
-    id
-    patient_id
-    device_id
-    samples_json
-    mode
-    recorded_at
-    sample_rate
-    sample_count
-
-No Firebase or mobile push notification code.
+ecg_readings
 =========================================================
 */
 
 
 // -------------------------------------------------------
-// 1. VERIFY PATIENT ACCESS
+// 1. VERIFY RAVI4 PATIENT ACCESS
 // -------------------------------------------------------
 
 require_once __DIR__ . "/patient_access.php";
 
 
 // -------------------------------------------------------
-// 2. GET ECG RECORDINGS
+// 2. VERIFY DATABASE CONNECTION
 // -------------------------------------------------------
+
+if (!isset($db) || !($db instanceof mysqli)) {
+    error_log("Ravi4 ECG history: Database connection unavailable.");
+    die("Database connection is unavailable.");
+}
+
+
+// -------------------------------------------------------
+// 3. VERIFY PATIENT AND DEVICE ID
+// -------------------------------------------------------
+
+$patient_id = trim((string)$patient_id);
+$device_id  = trim((string)$device_id);
+$patient_name = trim((string)$patient_name);
+
+if ($patient_id === "" || $device_id === "") {
+    error_log("Ravi4 ECG history: Missing patient or device identity.");
+    die("Patient access information is incomplete.");
+}
+
+
+// -------------------------------------------------------
+// 4. GET ONLY THIS PATIENT'S ECG RECORDINGS
+// -------------------------------------------------------
+
+// IMPORTANT:
+// Both patient_id and device_id are compulsory filters.
+//
+// Example:
+// P1004 + ESP32-01 can see only P1004 records from ESP32-01.
+// P1001 + ESP32-01 can see only P1001 records from ESP32-01.
+//
+// Even if both patients share ESP32-01, their histories
+// remain separate.
 
 $sql = "
     SELECT
@@ -63,19 +90,35 @@ $sql = "
 $stmt = $db->prepare($sql);
 
 if (!$stmt) {
-    error_log("Ravi3 ECG history query error: " . $db->error);
+    error_log("Ravi4 ECG history prepare error: " . $db->error);
     die("Unable to load ECG history.");
 }
 
 $stmt->bind_param("ss", $patient_id, $device_id);
 
-$stmt->execute();
+if (!$stmt->execute()) {
+    error_log("Ravi4 ECG history execute error: " . $stmt->error);
+    $stmt->close();
+    die("Unable to load ECG history.");
+}
 
 $result = $stmt->get_result();
 
 $recordings = [];
 
 while ($row = $result->fetch_assoc()) {
+
+    // Extra safety check.
+    // Do not display a row belonging to another patient
+    // or another controller.
+
+    if (
+        $row["patient_id"] !== $patient_id ||
+        $row["device_id"] !== $device_id
+    ) {
+        continue;
+    }
+
     $recordings[] = $row;
 }
 
@@ -83,10 +126,10 @@ $stmt->close();
 
 
 // -------------------------------------------------------
-// 3. SAFE DISPLAY FUNCTION
+// 5. SAFE DISPLAY FUNCTION
 // -------------------------------------------------------
 
-function ravi3_ecg_h($value)
+function ravi4_ecg_h($value)
 {
     return htmlspecialchars(
         (string)($value ?? ""),
@@ -97,7 +140,7 @@ function ravi3_ecg_h($value)
 
 
 // -------------------------------------------------------
-// 4. PREPARE ECG DATA FOR JAVASCRIPT
+// 6. PREPARE ECG DATA FOR JAVASCRIPT
 // -------------------------------------------------------
 
 $ecgData = [];
@@ -109,7 +152,6 @@ foreach ($recordings as $recording) {
         true
     );
 
-    // Accept only a JSON array of numeric ECG samples.
     if (!is_array($samples)) {
         $samples = [];
     }
@@ -118,17 +160,20 @@ foreach ($recordings as $recording) {
 
     foreach ($samples as $sample) {
 
-        if (is_numeric($sample)) {
+        if (is_numeric($sample) && is_finite((float)$sample)) {
             $validSamples[] = (float)$sample;
         }
     }
 
     $ecgData[] = [
         "id" => (int)$recording["id"],
+        "patient_id" => (string)$recording["patient_id"],
+        "device_id" => (string)$recording["device_id"],
         "date" => (string)$recording["recorded_at"],
         "mode" => (string)$recording["mode"],
         "sample_rate" => (int)$recording["sample_rate"],
         "sample_count" => (int)$recording["sample_count"],
+        "actual_samples" => count($validSamples),
         "samples" => $validSamples
     ];
 }
@@ -145,7 +190,7 @@ foreach ($recordings as $recording) {
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
 
-    <title>Ravi3 ECG History</title>
+    <title>Ravi4 ECG History</title>
 
     <style>
 
@@ -194,6 +239,7 @@ foreach ($recordings as $recording) {
             padding: 15px;
             border-radius: 8px;
             margin-bottom: 15px;
+            line-height: 1.8;
         }
 
         .record-card {
@@ -225,16 +271,21 @@ foreach ($recordings as $recording) {
             font-size: 14px;
         }
 
+        .identity {
+            background: #edf5fb;
+            padding: 10px;
+            border-radius: 5px;
+            margin: 12px 0;
+            line-height: 1.8;
+            font-size: 14px;
+        }
+
         .no-data {
             background: white;
             padding: 20px;
             border-radius: 8px;
             color: #667788;
         }
-
-        /* -----------------------------------------------
-           ECG DOWNLOAD BUTTONS
-        ------------------------------------------------ */
 
         .download-buttons {
             display: flex;
@@ -275,6 +326,12 @@ foreach ($recordings as $recording) {
             margin-top: 10px;
         }
 
+        .sample-warning {
+            color: #a35b00;
+            font-size: 13px;
+            margin-top: 8px;
+        }
+
         .footer {
             text-align: center;
             color: #778899;
@@ -303,9 +360,7 @@ foreach ($recordings as $recording) {
 <div class="container">
 
 
-    <!-- -----------------------------------------------
-         PAGE HEADER
-    ------------------------------------------------ -->
+    <!-- PAGE HEADER -->
 
     <div class="header">
 
@@ -314,18 +369,18 @@ foreach ($recordings as $recording) {
         <p>
             Patient:
             <strong>
-                <?php echo ravi3_ecg_h($patient_name); ?>
+                <?php echo ravi4_ecg_h($patient_name); ?>
             </strong>
         </p>
 
         <p>
             Patient ID:
-            <?php echo ravi3_ecg_h($patient_id); ?>
+            <?php echo ravi4_ecg_h($patient_id); ?>
         </p>
 
         <p>
             Device ID:
-            <?php echo ravi3_ecg_h($device_id); ?>
+            <?php echo ravi4_ecg_h($device_id); ?>
         </p>
 
         <div class="navigation">
@@ -345,35 +400,39 @@ foreach ($recordings as $recording) {
     </div>
 
 
-    <!-- -----------------------------------------------
-         RECORDING INFORMATION
-    ------------------------------------------------ -->
+    <!-- RECORDING INFORMATION -->
 
     <div class="info">
 
-        <strong>Total ECG recordings displayed:</strong>
+        <strong>Logged-in patient:</strong>
+        <?php echo ravi4_ecg_h($patient_id); ?>
 
+        <br>
+
+        <strong>Assigned controller:</strong>
+        <?php echo ravi4_ecg_h($device_id); ?>
+
+        <br>
+
+        <strong>Total ECG recordings displayed:</strong>
         <?php echo count($recordings); ?>
 
-        <br><br>
+        <br>
 
         Maximum records displayed: 50
 
-        <br><br>
+        <br>
 
         Newest recording appears first.
 
-        <br><br>
+        <br>
 
-        Each recording has its own CSV, PNG and PDF
-        download buttons.
+        Every recording is filtered by patient ID and device ID.
 
     </div>
 
 
-    <!-- -----------------------------------------------
-         ECG RECORDINGS
-    ------------------------------------------------ -->
+    <!-- ECG RECORDINGS -->
 
     <?php if (count($recordings) > 0): ?>
 
@@ -382,16 +441,32 @@ foreach ($recordings as $recording) {
             <div class="record-card">
 
                 <h3>
-                    ECG Recording
-                    #<?php echo (int)$recording["id"]; ?>
+                    ECG Recording #<?php echo (int)$recording["id"]; ?>
                 </h3>
+
+                <!-- RECORD IDENTITY -->
+
+                <div class="identity">
+
+                    <strong>Patient ID:</strong>
+                    <?php echo ravi4_ecg_h($recording["patient_id"]); ?>
+
+                    <br>
+
+                    <strong>Device ID:</strong>
+                    <?php echo ravi4_ecg_h($recording["device_id"]); ?>
+
+                </div>
+
+
+                <!-- RECORDING DETAILS -->
 
                 <div class="metadata">
 
                     <strong>Date / Time:</strong>
 
                     <?php
-                    echo ravi3_ecg_h($recording["recorded_at"]);
+                    echo ravi4_ecg_h($recording["recorded_at"]);
                     ?>
 
                     <br>
@@ -399,17 +474,25 @@ foreach ($recordings as $recording) {
                     <strong>Sample Rate:</strong>
 
                     <?php
-                    echo ravi3_ecg_h($recording["sample_rate"]);
+                    echo ravi4_ecg_h($recording["sample_rate"]);
                     ?>
 
                     samples/second
 
                     <br>
 
-                    <strong>Sample Count:</strong>
+                    <strong>Stored Sample Count:</strong>
 
                     <?php
-                    echo ravi3_ecg_h($recording["sample_count"]);
+                    echo ravi4_ecg_h($recording["sample_count"]);
+                    ?>
+
+                    <br>
+
+                    <strong>Decoded Sample Count:</strong>
+
+                    <?php
+                    echo count($ecgData[$index]["samples"]);
                     ?>
 
                     <br>
@@ -417,7 +500,7 @@ foreach ($recordings as $recording) {
                     <strong>Mode:</strong>
 
                     <?php
-                    echo ravi3_ecg_h($recording["mode"]);
+                    echo ravi4_ecg_h($recording["mode"]);
                     ?>
 
                 </div>
@@ -428,7 +511,10 @@ foreach ($recordings as $recording) {
                 $recordingId = (int)$recording["id"];
                 ?>
 
-                <?php if (count($samples) > 1): ?>
+                <?php if (
+                    count($samples) > 1 &&
+                    $ecgData[$index]["sample_count"] === count($samples)
+                ): ?>
 
                     <!-- ECG GRAPH -->
 
@@ -439,9 +525,7 @@ foreach ($recordings as $recording) {
                     </canvas>
 
 
-                    <!-- --------------------------------
-                         THREE DOWNLOAD BUTTONS
-                    --------------------------------- -->
+                    <!-- DOWNLOAD BUTTONS -->
 
                     <div class="download-buttons">
 
@@ -475,9 +559,10 @@ foreach ($recordings as $recording) {
 
                 <?php else: ?>
 
-                    <p>
-                        ECG waveform data is not available
-                        for this recording.
+                    <p class="sample-warning">
+                        ECG waveform is unavailable or its decoded
+                        sample count does not match the stored count.
+                        This recording is not displayed as a graph.
                     </p>
 
                 <?php endif; ?>
@@ -498,24 +583,22 @@ foreach ($recordings as $recording) {
     <?php endif; ?>
 
 
-    <!-- -----------------------------------------------
-         FOOTER
-    ------------------------------------------------ -->
+    <!-- FOOTER -->
 
     <div class="footer">
 
-        Ravi3 Patient Monitoring System
+        Ravi4 Patient Monitoring System
 
     </div>
 
 </div>
 
 
-<!-- =====================================================
-     5. ECG DATA FOR JAVASCRIPT
-===================================================== -->
-
 <script>
+
+// -------------------------------------------------------
+// ECG DATA FROM THE AUTHENTICATED PATIENT'S RECORDS
+// -------------------------------------------------------
 
 const ECG_RECORDINGS = <?php
 
@@ -532,7 +615,7 @@ echo json_encode(
 
 
 // -------------------------------------------------------
-// 6. DRAW ECG LINE GRAPHS
+// DRAW ECG LINE GRAPHS
 // -------------------------------------------------------
 
 function drawECGGraph(recording) {
@@ -552,10 +635,10 @@ function drawECGGraph(recording) {
     const width = canvas.width;
     const height = canvas.height;
 
-    // Clear graph.
     ctx.clearRect(0, 0, width, height);
 
-    // Draw light ECG grid.
+    // ECG grid.
+
     ctx.strokeStyle = "#f1dede";
     ctx.lineWidth = 1;
 
@@ -577,7 +660,8 @@ function drawECGGraph(recording) {
 
     }
 
-    // Find minimum and maximum values.
+    // Minimum and maximum values.
+
     let minValue = samples[0];
     let maxValue = samples[0];
 
@@ -593,14 +677,12 @@ function drawECGGraph(recording) {
 
     }
 
-    // Avoid division by zero for a flat recording.
     if (maxValue === minValue) {
         maxValue = minValue + 1;
     }
 
     const padding = 10;
 
-    // Draw continuous ECG waveform.
     ctx.strokeStyle = "#d00000";
     ctx.lineWidth = 1.5;
     ctx.beginPath();
@@ -633,18 +715,21 @@ function drawECGGraph(recording) {
 }
 
 
-// Draw all available ECG graphs when page loads.
+// Draw all graphs when page loads.
+
 document.addEventListener("DOMContentLoaded", function () {
 
     ECG_RECORDINGS.forEach(function (recording) {
+
         drawECGGraph(recording);
+
     });
 
 });
 
 
 // -------------------------------------------------------
-// 7. FIND RECORDING BY ID
+// FIND RECORDING BY ID
 // -------------------------------------------------------
 
 function getECGRecording(recordingId) {
@@ -659,7 +744,7 @@ function getECGRecording(recordingId) {
 
 
 // -------------------------------------------------------
-// 8. DOWNLOAD ECG DATA AS CSV
+// DOWNLOAD ECG DATA AS CSV
 // -------------------------------------------------------
 
 function downloadECGCSV(recordingId) {
@@ -673,8 +758,6 @@ function downloadECGCSV(recordingId) {
         return;
     }
 
-    const sampleRate = recording.sample_rate;
-
     let csv = "";
 
     csv += "Sample Number,Time (seconds),ECG Value\n";
@@ -683,8 +766,8 @@ function downloadECGCSV(recordingId) {
 
         let time = "";
 
-        if (sampleRate > 0) {
-            time = (index / sampleRate).toFixed(6);
+        if (recording.sample_rate > 0) {
+            time = (index / recording.sample_rate).toFixed(6);
         }
 
         csv +=
@@ -694,7 +777,6 @@ function downloadECGCSV(recordingId) {
 
     });
 
-    // UTF-8 BOM helps Excel display CSV correctly.
     const blob = new Blob(
         ["\uFEFF" + csv],
         { type: "text/csv;charset=utf-8;" }
@@ -707,7 +789,10 @@ function downloadECGCSV(recordingId) {
     link.href = url;
 
     link.download =
-        "ECG_Recording_" + recordingId + ".csv";
+        "ECG_" +
+        recording.patient_id + "_" +
+        recording.device_id + "_" +
+        recordingId + ".csv";
 
     document.body.appendChild(link);
 
@@ -721,7 +806,7 @@ function downloadECGCSV(recordingId) {
 
 
 // -------------------------------------------------------
-// 9. DOWNLOAD ECG GRAPH AS PNG
+// DOWNLOAD ECG GRAPH AS PNG
 // -------------------------------------------------------
 
 function downloadECGPNG(recordingId) {
@@ -753,7 +838,10 @@ function downloadECGPNG(recordingId) {
     link.href = imageURL;
 
     link.download =
-        "ECG_Recording_" + recordingId + ".png";
+        "ECG_" +
+        recording.patient_id + "_" +
+        recording.device_id + "_" +
+        recordingId + ".png";
 
     document.body.appendChild(link);
 
@@ -765,7 +853,7 @@ function downloadECGPNG(recordingId) {
 
 
 // -------------------------------------------------------
-// 10. PRINT / SAVE ECG GRAPH AS PDF
+// PRINT / SAVE ECG GRAPH AS PDF
 // -------------------------------------------------------
 
 function downloadECGPDF(recordingId) {
@@ -790,11 +878,7 @@ function downloadECGPDF(recordingId) {
         return;
     }
 
-    // Open a separate print window.
-    const printWindow = window.open(
-        "",
-        "_blank"
-    );
+    const printWindow = window.open("", "_blank");
 
     if (!printWindow) {
 
@@ -806,10 +890,8 @@ function downloadECGPDF(recordingId) {
         return;
     }
 
-    // Convert the graph into an image.
     const graphImage = canvas.toDataURL("image/png");
 
-    // Escape text before placing it into the report.
     function escapeHTML(value) {
 
         return String(value ?? "").replace(
@@ -830,36 +912,6 @@ function downloadECGPDF(recordingId) {
         );
 
     }
-
-    const patientName = <?php
-        echo json_encode(
-            $patient_name,
-            JSON_HEX_TAG |
-            JSON_HEX_APOS |
-            JSON_HEX_QUOT |
-            JSON_HEX_AMP
-        );
-    ?>;
-
-    const patientId = <?php
-        echo json_encode(
-            $patient_id,
-            JSON_HEX_TAG |
-            JSON_HEX_APOS |
-            JSON_HEX_QUOT |
-            JSON_HEX_AMP
-        );
-    ?>;
-
-    const deviceId = <?php
-        echo json_encode(
-            $device_id,
-            JSON_HEX_TAG |
-            JSON_HEX_APOS |
-            JSON_HEX_QUOT |
-            JSON_HEX_AMP
-        );
-    ?>;
 
     const reportHTML = `
         <!DOCTYPE html>
@@ -901,11 +953,9 @@ function downloadECGPDF(recordingId) {
                 }
 
                 @media print {
-
                     body {
                         padding: 10px;
                     }
-
                 }
 
             </style>
@@ -919,15 +969,15 @@ function downloadECGPDF(recordingId) {
             <div class="details">
 
                 <strong>Patient:</strong>
-                ${escapeHTML(patientName)}
+                ${escapeHTML(<?php echo json_encode($patient_name); ?>)}
                 <br>
 
                 <strong>Patient ID:</strong>
-                ${escapeHTML(patientId)}
+                ${escapeHTML(recording.patient_id)}
                 <br>
 
                 <strong>Device ID:</strong>
-                ${escapeHTML(deviceId)}
+                ${escapeHTML(recording.device_id)}
                 <br>
 
                 <strong>Recording ID:</strong>
@@ -956,7 +1006,7 @@ function downloadECGPDF(recordingId) {
             <img src="${graphImage}" alt="ECG Graph">
 
             <div class="footer">
-                Ravi3 Patient Monitoring System
+                Ravi4 Patient Monitoring System
             </div>
 
         </body>
@@ -969,7 +1019,6 @@ function downloadECGPDF(recordingId) {
 
     printWindow.document.close();
 
-    // Wait for the report image to load before printing.
     printWindow.onload = function () {
 
         printWindow.focus();
@@ -977,17 +1026,6 @@ function downloadECGPDF(recordingId) {
         printWindow.print();
 
     };
-
-    // Fallback for browsers where onload fires before assignment.
-    setTimeout(function () {
-
-        if (!printWindow.closed) {
-
-            printWindow.focus();
-
-        }
-
-    }, 500);
 
 }
 
