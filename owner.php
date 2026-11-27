@@ -122,7 +122,8 @@ function r4_table_exists($db, $table)
         "alerts",
         "ecg_readings",
         "monitor_recordings",
-        "web_users"
+        "web_users",
+        "device_active_patients"
     ];
 
     if (!in_array($table, $allowed, true)) {
@@ -1254,6 +1255,74 @@ if ($_SERVER["REQUEST_METHOD"] === "POST") {
         );
     }
 
+    /*===================================================
+      ACTION 10: SELECT ACTIVE PATIENT FOR ONE ESP32
+
+      One device can have several assigned patients, but
+      only one patient is selected to receive new readings.
+      The exact assignment must be enabled and date-valid.
+    ===================================================*/
+
+    if ($action === "save_active_patient") {
+
+        $device_id = trim($_POST["device_id"] ?? "");
+        $patient_id = trim($_POST["patient_id"] ?? "");
+
+        if ($device_id === "" || $patient_id === "") {
+            r4_message("Please select a device and an active patient.");
+        }
+
+        if (!r4_table_exists($db, "device_active_patients")) {
+            r4_message(
+                "The device_active_patients table was not found. Please create the table first."
+            );
+        }
+
+        /*
+          Confirm the exact device_id + patient_id pair is
+          currently enabled and within its assignment dates.
+        */
+        if (!r4_device_belongs_to_patient($db, $device_id, $patient_id)) {
+            r4_message(
+                "Selection rejected. This patient is not currently enabled and date-valid for this exact device."
+            );
+        }
+
+        /*
+          device_id is the primary key in device_active_patients.
+          Therefore this insert creates or replaces the one
+          selected patient for this device only.
+        */
+        $stmt = $db->prepare(
+            "INSERT INTO device_active_patients
+                (device_id, patient_id, selected_at)
+             VALUES (?, ?, NOW())
+             ON DUPLICATE KEY UPDATE
+                patient_id = VALUES(patient_id),
+                selected_at = NOW()"
+        );
+
+        if (!$stmt) {
+            error_log("Ravi4 active patient prepare: " . $db->error);
+            r4_message("Could not prepare active patient selection.");
+        }
+
+        $stmt->bind_param("ss", $device_id, $patient_id);
+
+        if (!$stmt->execute()) {
+            error_log("Ravi4 active patient save: " . $stmt->error);
+            $stmt->close();
+            r4_message("Could not save the active patient selection.");
+        }
+
+        $stmt->close();
+
+        r4_message(
+            "Active patient " . $patient_id .
+            " selected for device " . $device_id . "."
+        );
+    }
+
     r4_message("Unknown administrator request.");
 }
 
@@ -1392,6 +1461,76 @@ while ($row = $result->fetch_assoc()) {
 }
 
 $result->free();
+
+/*-------------------------------------------------------
+  10A. LOAD ACTIVE-PATIENT SELECTIONS FOR EACH DEVICE
+
+  Only enabled assignments whose start/end dates include
+  the current database time are offered as choices.
+-------------------------------------------------------*/
+
+$activePatientSelections = [];
+$activePatientChoices = [];
+$activeDeviceIds = [];
+
+foreach ($devices as $deviceRow) {
+    $deviceKey = (string)$deviceRow["device_id"];
+    $activeDeviceIds[$deviceKey] = true;
+}
+
+if (r4_table_exists($db, "device_active_patients")) {
+
+    $selectionResult = $db->query(
+        "SELECT device_id, patient_id
+         FROM device_active_patients
+         ORDER BY device_id"
+    );
+
+    if ($selectionResult) {
+        while ($selectionRow = $selectionResult->fetch_assoc()) {
+            $activePatientSelections[(string)$selectionRow["device_id"]] =
+                (string)$selectionRow["patient_id"];
+        }
+        $selectionResult->free();
+    } else {
+        error_log("Ravi4 active patient selections: " . $db->error);
+    }
+
+    $choiceResult = $db->query(
+        "SELECT
+            d.device_id,
+            d.patient_id,
+            p.full_name
+         FROM patient_devices d
+         LEFT JOIN patients p
+           ON p.patient_id = d.patient_id
+         WHERE d.enabled = 1
+           AND (
+                d.start_date_time IS NULL
+                OR d.start_date_time <= NOW()
+           )
+           AND (
+                d.end_date_time IS NULL
+                OR d.end_date_time >= NOW()
+           )
+         ORDER BY d.device_id, d.patient_id"
+    );
+
+    if ($choiceResult) {
+        while ($choiceRow = $choiceResult->fetch_assoc()) {
+            $deviceKey = (string)$choiceRow["device_id"];
+
+            if (!isset($activePatientChoices[$deviceKey])) {
+                $activePatientChoices[$deviceKey] = [];
+            }
+
+            $activePatientChoices[$deviceKey][] = $choiceRow;
+        }
+        $choiceResult->free();
+    } else {
+        error_log("Ravi4 active patient choices: " . $db->error);
+    }
+}
 
 /*-------------------------------------------------------
   11. LOAD PATIENT LOGIN ACCOUNTS
@@ -2420,6 +2559,129 @@ th { background: #e7eef7; }
     <button type="submit">View Patient Reports</button>
 
 </form>
+
+</div>
+
+<!--=====================================================
+    SECTION 8: SELECT ACTIVE PATIENT FOR EACH ESP32
+======================================================-->
+
+<div class="section">
+
+<h2>8. Select Active Patient for Each ESP32 Controller</h2>
+
+<div class="info">
+    Each ESP32 device may be assigned to more than one patient.
+    Select exactly one currently enabled and date-valid patient
+    for each device. New readings received from that ESP32 will
+    be saved only for the patient selected here.
+    This selection does not change Section 7 or its report filter.
+</div>
+
+<?php if (!r4_table_exists($db, "device_active_patients")): ?>
+
+    <div class="warning">
+        The database table <strong>device_active_patients</strong>
+        was not found. Create this table before using Section 8.
+    </div>
+
+<?php elseif (count($activeDeviceIds) === 0): ?>
+
+    <p>No ESP32 device assignments have been registered yet.</p>
+
+<?php else: ?>
+
+<div style="overflow-x:auto;">
+<table>
+<tr>
+    <th>Device ID</th>
+    <th>Currently Selected Patient</th>
+    <th>Choose Active Patient and Save</th>
+</tr>
+
+<?php foreach (array_keys($activeDeviceIds) as $deviceId): ?>
+<?php
+    $currentPatientId = $activePatientSelections[$deviceId] ?? "";
+    $eligibleChoices = $activePatientChoices[$deviceId] ?? [];
+    $currentIsEligible = false;
+
+    foreach ($eligibleChoices as $eligibleChoice) {
+        if ((string)$eligibleChoice["patient_id"] === $currentPatientId) {
+            $currentIsEligible = true;
+            break;
+        }
+    }
+?>
+<tr>
+    <td><strong><?= r4_h($deviceId) ?></strong></td>
+
+    <td>
+        <?php if ($currentPatientId !== "" && $currentIsEligible): ?>
+            <span class="status-enabled">
+                <?= r4_h($currentPatientId) ?>
+            </span>
+        <?php elseif ($currentPatientId !== ""): ?>
+            <span class="status-disabled">
+                <?= r4_h($currentPatientId) ?> - not currently eligible
+            </span>
+        <?php else: ?>
+            <span class="status-disabled">No patient selected</span>
+        <?php endif; ?>
+    </td>
+
+    <td>
+        <?php if (count($eligibleChoices) === 0): ?>
+            <span class="status-disabled">
+                No enabled, date-valid patient assignment
+            </span>
+        <?php else: ?>
+            <form method="post" action="owner.php">
+                <input type="hidden" name="csrf_token"
+                       value="<?= r4_h($csrf_token) ?>">
+                <input type="hidden" name="action"
+                       value="save_active_patient">
+                <input type="hidden" name="device_id"
+                       value="<?= r4_h($deviceId) ?>">
+
+                <select name="patient_id" required>
+                    <option value="">-- Select patient --</option>
+                    <?php foreach ($eligibleChoices as $choice): ?>
+                        <option
+                            value="<?= r4_h($choice["patient_id"]) ?>"
+                            <?= (
+                                $currentIsEligible &&
+                                $currentPatientId === (string)$choice["patient_id"]
+                            ) ? "selected" : "" ?>>
+                            <?= r4_h(
+                                $choice["patient_id"] .
+                                " - " .
+                                ($choice["full_name"] ?? "Unknown")
+                            ) ?>
+                        </option>
+                    <?php endforeach; ?>
+                </select>
+
+                <button type="submit" class="green">
+                    Save Selection
+                </button>
+            </form>
+        <?php endif; ?>
+    </td>
+</tr>
+<?php endforeach; ?>
+
+</table>
+</div>
+
+<?php endif; ?>
+
+<p class="note">
+    A patient can be selected only when the exact device/patient
+    assignment is enabled and its assignment dates are valid.
+    If an assignment is later disabled or expires, the API will
+    reject readings for that selection until the owner selects
+    another eligible patient.
+</p>
 
 </div>
 
