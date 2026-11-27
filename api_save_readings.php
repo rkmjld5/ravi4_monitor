@@ -1,13 +1,13 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
+RAVI4 PATIENT MONITORING SYSTEM
 File: api_save_readings.php
 
 PURPOSE:
 1. Receive readings from ESP32.
 2. Authenticate the ESP32 using API token.
-3. Identify patient assignments using device_id.
+3. Identify the owner-selected patient for the exact device_id.
 4. Check device status and access dates.
 5. Save monitoring readings.
 6. Save optional ECG samples.
@@ -73,7 +73,7 @@ if ($_SERVER["REQUEST_METHOD"] !== "POST") {
 // 4. VERIFY API TOKEN
 // -------------------------------------------------------
 
-// Configure API_TOKEN in the Ravi3 Render environment.
+// Configure API_TOKEN in the Ravi4 Render environment.
 //
 // ESP32 must send this token in the HTTP header:
 // X-API-TOKEN: your_secret_token
@@ -205,113 +205,123 @@ if (!in_array($mode, ["SIMULATION", "REAL"], true)) {
 
 
 // -------------------------------------------------------
-// 10. CHECK DEVICE ASSIGNMENTS
+// 10. MATCH THIS CONTROLLER TO ITS OWNER-SELECTED PATIENT
 // -------------------------------------------------------
 
-// Find every enabled patient assignment for this device.
+// IMPORTANT:
+// The ESP32 sends its own device_id in the JSON data.
+// We use that exact device_id to find ONE patient selected
+// by the owner in device_active_patients.
 //
-// This supports a device shared by multiple patient
-// accounts, provided those accounts have the same
-// device_id in patient_devices.
+// We then verify that the same patient is still assigned
+// to the same device in patient_devices, is enabled, and
+// is within the assignment dates.
 //
-// Expected columns:
-// patient_id, device_id, enabled, valid_from, valid_until.
+// There is NO fallback to another patient and NO saving
+// to every patient assigned to the controller.
 
-$assignmentSql = "
+$activeSql = "
     SELECT
-        patient_id,
-        device_id,
-        enabled,
-        start_date_time AS valid_from,
-        end_date_time AS valid_until
-    FROM patient_devices
-    WHERE device_id = ?
-      AND enabled = 1
+        ap.patient_id,
+        pd.start_date_time AS valid_from,
+        pd.end_date_time AS valid_until
+    FROM device_active_patients ap
+    INNER JOIN patient_devices pd
+        ON pd.device_id = ap.device_id
+       AND pd.patient_id = ap.patient_id
+    WHERE ap.device_id = ?
+      AND pd.enabled = 1
+    LIMIT 1
 ";
-$assignmentStmt = $db->prepare($assignmentSql);
 
-if (!$assignmentStmt) {
+$activeStmt = $db->prepare($activeSql);
 
-    error_log("Ravi3 assignment query error: " . $db->error);
+if (!$activeStmt) {
 
-    http_response_code(500);
-
-    ravi3_response(false, "Unable to check device assignment.");
-
-}
-
-$assignmentStmt->bind_param("s", $device_id);
-
-if (!$assignmentStmt->execute()) {
-
-    error_log("Ravi3 assignment execution error: " . $assignmentStmt->error);
-
-    $assignmentStmt->close();
+    error_log("Ravi4 active-patient query preparation error: " . $db->error);
 
     http_response_code(500);
 
-    ravi3_response(false, "Unable to check device assignment.");
+    ravi3_response(false, "Unable to verify the controller's active patient.");
 
 }
 
-$assignmentResult = $assignmentStmt->get_result();
+$activeStmt->bind_param("s", $device_id);
 
-$patients = [];
+if (!$activeStmt->execute()) {
 
-date_default_timezone_set("Asia/Kolkata");
+    error_log("Ravi4 active-patient query execution error: " . $activeStmt->error);
 
-$now = new DateTime(
-    "now",
-    new DateTimeZone("Asia/Kolkata")
-);
+    $activeStmt->close();
 
-while ($assignment = $assignmentResult->fetch_assoc()) {
+    http_response_code(500);
 
-    $dateAllowed = true;
+    ravi3_response(false, "Unable to verify the controller's active patient.");
 
-    if (!empty($assignment["valid_from"])) {
-
-        $validFrom = new DateTime(
-            $assignment["valid_from"],
-            new DateTimeZone("Asia/Kolkata")
-        );
-
-        if ($now < $validFrom) {
-            $dateAllowed = false;
-        }
-    }
-
-    if (!empty($assignment["valid_until"])) {
-
-        $validUntil = new DateTime(
-            $assignment["valid_until"],
-            new DateTimeZone("Asia/Kolkata")
-        );
-
-        if ($now > $validUntil) {
-            $dateAllowed = false;
-        }
-    }
-
-    if ($dateAllowed) {
-        $patients[] = $assignment["patient_id"];
-    }
 }
 
-$assignmentStmt->close();
+$activeResult = $activeStmt->get_result();
+$activeRow = $activeResult->fetch_assoc();
+$activeStmt->close();
 
-$patients = array_values(array_unique($patients));
-
-if (count($patients) === 0) {
+if (!$activeRow) {
 
     http_response_code(403);
 
     ravi3_response(
         false,
-        "No enabled patient assignment is valid for this device."
+        "No owner-selected active patient is assigned to this controller, or its assignment is disabled. No data was saved.",
+        ["device_id" => $device_id]
     );
 
 }
+
+// Check assignment dates using India local time.
+date_default_timezone_set("Asia/Kolkata");
+
+$now = new DateTime("now", new DateTimeZone("Asia/Kolkata"));
+$dateAllowed = true;
+
+if (!empty($activeRow["valid_from"])) {
+
+    $validFrom = new DateTime(
+        $activeRow["valid_from"],
+        new DateTimeZone("Asia/Kolkata")
+    );
+
+    if ($now < $validFrom) {
+        $dateAllowed = false;
+    }
+}
+
+if (!empty($activeRow["valid_until"])) {
+
+    $validUntil = new DateTime(
+        $activeRow["valid_until"],
+        new DateTimeZone("Asia/Kolkata")
+    );
+
+    if ($now > $validUntil) {
+        $dateAllowed = false;
+    }
+}
+
+if (!$dateAllowed) {
+
+    http_response_code(403);
+
+    ravi3_response(
+        false,
+        "The owner-selected patient's assignment for this controller is not currently valid. No data was saved.",
+        ["device_id" => $device_id]
+    );
+
+}
+
+// Keep the existing save loop below, but give it exactly
+// ONE patient: the patient selected for this device.
+$activePatientId = (string)$activeRow["patient_id"];
+$patients = [$activePatientId];
 
 
 // -------------------------------------------------------
@@ -520,7 +530,7 @@ try {
 
 
     // ---------------------------------------------------
-    // 17. SAVE DATA FOR EACH PATIENT ASSIGNED TO DEVICE
+    // 17. SAVE DATA FOR THE ONE OWNER-SELECTED PATIENT
     // ---------------------------------------------------
 
     foreach ($patients as $assignedPatientId) {
@@ -567,7 +577,7 @@ try {
 
 
         // ------------------------------------------------
-        // 18. CHECK ALERT THRESHOLDS
+        // 18. CHECK ALERT THRESHOLDS FOR THE SELECTED PATIENT
         // ------------------------------------------------
 
         foreach ($alertRules as $rule) {
@@ -715,6 +725,7 @@ try {
         "Readings saved successfully.",
         [
             "device_id" => $device_id,
+            "active_patient_id" => $activePatientId,
             "patient_count" => count($patients),
             "monitoring_saved" => $monitoringSaved,
             "ecg_saved" => $ecgSaved,
@@ -735,7 +746,7 @@ try {
     $db->rollback();
 
     error_log(
-        "Ravi3 API save error: " . $e->getMessage()
+        "Ravi4 API save error: " . $e->getMessage()
     );
 
     http_response_code(500);
