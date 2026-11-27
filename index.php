@@ -1,23 +1,24 @@
 <?php
 /*
 =========================================================
-RAVI3 PATIENT MONITORING SYSTEM
-File: index.php
+PROJECT: RAVI4 PATIENT MONITORING SYSTEM
+FILE: index.php
 
 MAIN PATIENT DASHBOARD
 
-Displays:
-1. Room temperature
-2. Humidity
-3. Heart rate (BPM)
-4. SpO2
-5. Body temperature
-6. Recent dashboard alerts
+IMPORTANT SHARED DEVICE RULE:
 
-The dashboard displays only readings belonging to
-the logged-in patient's assigned device.
+ESP32-01 can be assigned to multiple patients.
 
-No Firebase or mobile push notification code.
+P1001 + ESP32-01 = P1001 records only.
+P1004 + ESP32-01 = P1004 records only.
+
+Every monitoring and alert query must check BOTH:
+1. patient_id
+2. device_id
+
+No records are deleted or modified.
+No ESP32 firmware changes are required.
 =========================================================
 */
 
@@ -28,14 +29,60 @@ No Firebase or mobile push notification code.
 
 require_once __DIR__ . "/patient_access.php";
 
+/*
+   patient_access.php must verify the login session.
+
+   We explicitly take the patient identity from the
+   Ravi4 patient session to avoid using a device-only
+   patient selection.
+*/
+
+if (session_status() !== PHP_SESSION_ACTIVE) {
+    session_start();
+}
+
+if (
+    empty($_SESSION["ravi4_patient_logged_in"]) ||
+    empty($_SESSION["ravi4_patient_id"]) ||
+    empty($_SESSION["ravi4_device_id"])
+) {
+    header("Location: login.php");
+    exit;
+}
+
+// Use the patient ID and device ID belonging to this login.
+$patient_id = $_SESSION["ravi4_patient_id"];
+$device_id  = $_SESSION["ravi4_device_id"];
+
+$patient_name = $_SESSION["ravi4_patient_name"] ?? "";
+
+// Check database connection.
+if (!isset($db) || !($db instanceof mysqli)) {
+    die("Database connection is not available.");
+}
+
 
 // -------------------------------------------------------
-// 2. GET LATEST MONITORING READING
+// 2. GET LATEST MONITORING READING FOR THIS PATIENT
 // -------------------------------------------------------
+
+/*
+   VERY IMPORTANT:
+
+   Do not remove the patient_id condition.
+
+   Example:
+   P1001 login -> only P1001 readings.
+   P1004 login -> only P1004 readings.
+
+   Both patients may use ESP32-01.
+*/
 
 $sql = "
     SELECT
         id,
+        patient_id,
+        device_id,
         room_temperature,
         humidity,
         bpm,
@@ -53,7 +100,7 @@ $sql = "
 $stmt = $db->prepare($sql);
 
 if (!$stmt) {
-    error_log("Ravi3 dashboard reading query error: " . $db->error);
+    error_log("Ravi4 dashboard reading query error: " . $db->error);
     die("Unable to load monitoring readings.");
 }
 
@@ -67,7 +114,7 @@ $stmt->close();
 
 
 // -------------------------------------------------------
-// 3. GET LATEST DASHBOARD ALERTS
+// 3. GET LATEST ALERTS FOR THIS PATIENT
 // -------------------------------------------------------
 
 $alerts = [];
@@ -75,6 +122,7 @@ $alerts = [];
 $alertSql = "
     SELECT
         id,
+        patient_id,
         parameter_name,
         measured_value,
         alert_message,
@@ -92,7 +140,9 @@ $alertSql = "
 $alertStmt = $db->prepare($alertSql);
 
 if (!$alertStmt) {
-    error_log("Ravi3 dashboard alert query error: " . $db->error);
+
+    error_log("Ravi4 dashboard alert query error: " . $db->error);
+
 } else {
 
     $alertStmt->bind_param("ss", $patient_id, $device_id);
@@ -112,7 +162,7 @@ if (!$alertStmt) {
 // 4. HELPER TO DISPLAY SAFE VALUES
 // -------------------------------------------------------
 
-function ravi3_h($value)
+function ravi4_h($value)
 {
     return htmlspecialchars(
         (string)($value ?? ""),
@@ -126,7 +176,7 @@ function ravi3_h($value)
 // 5. FORMAT READING VALUES
 // -------------------------------------------------------
 
-function ravi3_reading($reading, $field, $unit)
+function ravi4_reading($reading, $field, $unit)
 {
     if (
         !$reading ||
@@ -136,7 +186,7 @@ function ravi3_reading($reading, $field, $unit)
         return "--";
     }
 
-    return ravi3_h($reading[$field]) . " " . $unit;
+    return ravi4_h($reading[$field]) . " " . $unit;
 }
 
 ?>
@@ -151,7 +201,7 @@ function ravi3_reading($reading, $field, $unit)
     <meta name="viewport"
           content="width=device-width, initial-scale=1.0">
 
-    <title>Ravi3 Patient Dashboard</title>
+    <title>Ravi4 Patient Dashboard</title>
 
     <meta http-equiv="refresh" content="5">
 
@@ -316,17 +366,17 @@ function ravi3_reading($reading, $field, $unit)
 
         <p>
             Patient:
-            <strong><?php echo ravi3_h($patient_name); ?></strong>
+            <strong><?php echo ravi4_h($patient_name); ?></strong>
         </p>
 
         <p>
             Patient ID:
-            <?php echo ravi3_h($patient_id); ?>
+            <strong><?php echo ravi4_h($patient_id); ?></strong>
         </p>
 
         <p>
             Device ID:
-            <?php echo ravi3_h($device_id); ?>
+            <strong><?php echo ravi4_h($device_id); ?></strong>
         </p>
 
         <div class="navigation">
@@ -362,7 +412,7 @@ function ravi3_reading($reading, $field, $unit)
 
                 <div class="value">
                     <?php
-                    echo ravi3_reading(
+                    echo ravi4_reading(
                         $reading,
                         "room_temperature",
                         "°C"
@@ -379,7 +429,7 @@ function ravi3_reading($reading, $field, $unit)
 
                 <div class="value">
                     <?php
-                    echo ravi3_reading(
+                    echo ravi4_reading(
                         $reading,
                         "humidity",
                         "%"
@@ -396,7 +446,7 @@ function ravi3_reading($reading, $field, $unit)
 
                 <div class="value">
                     <?php
-                    echo ravi3_reading(
+                    echo ravi4_reading(
                         $reading,
                         "bpm",
                         "BPM"
@@ -413,7 +463,7 @@ function ravi3_reading($reading, $field, $unit)
 
                 <div class="value">
                     <?php
-                    echo ravi3_reading(
+                    echo ravi4_reading(
                         $reading,
                         "spo2",
                         "%"
@@ -430,7 +480,7 @@ function ravi3_reading($reading, $field, $unit)
 
                 <div class="value">
                     <?php
-                    echo ravi3_reading(
+                    echo ravi4_reading(
                         $reading,
                         "body_temperature",
                         "°C"
@@ -447,13 +497,19 @@ function ravi3_reading($reading, $field, $unit)
 
             <strong>Last Reading:</strong>
 
-            <?php echo ravi3_h($reading["recorded_at"]); ?>
+            <?php echo ravi4_h($reading["recorded_at"]); ?>
 
             <br><br>
 
             <strong>Device Mode:</strong>
 
-            <?php echo ravi3_h($reading["mode"]); ?>
+            <?php echo ravi4_h($reading["mode"]); ?>
+
+            <br><br>
+
+            <strong>Reading Patient ID:</strong>
+
+            <?php echo ravi4_h($reading["patient_id"]); ?>
 
         </div>
 
@@ -499,25 +555,25 @@ function ravi3_reading($reading, $field, $unit)
 
                         <td>
                             <?php
-                            echo ravi3_h($alert["recorded_at"]);
+                            echo ravi4_h($alert["recorded_at"]);
                             ?>
                         </td>
 
                         <td>
                             <?php
-                            echo ravi3_h($alert["parameter_name"]);
+                            echo ravi4_h($alert["parameter_name"]);
                             ?>
                         </td>
 
                         <td>
                             <?php
-                            echo ravi3_h($alert["measured_value"]);
+                            echo ravi4_h($alert["measured_value"]);
                             ?>
                         </td>
 
                         <td>
                             <?php
-                            echo ravi3_h($alert["alert_message"]);
+                            echo ravi4_h($alert["alert_message"]);
                             ?>
                         </td>
 
@@ -564,7 +620,7 @@ function ravi3_reading($reading, $field, $unit)
 
     <div class="footer">
 
-        Ravi3 Patient Monitoring System
+        Ravi4 Patient Monitoring System
 
         <br>
 
